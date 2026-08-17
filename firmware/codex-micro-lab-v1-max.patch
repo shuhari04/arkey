@@ -1,0 +1,110 @@
+diff --git a/keyboards/keychron/v1_max/v1_max.c b/keyboards/keychron/v1_max/v1_max.c
+index 9964a6800..cf0c4e3e1 100644
+--- a/keyboards/keychron/v1_max/v1_max.c
++++ b/keyboards/keychron/v1_max/v1_max.c
+@@ -14,8 +14,20 @@
+  */
+
+ #include "keychron.h"
++#include "codex_micro_lab.h"
+
+ #define POWER_ON_LED_DURATION 3000
+ static uint32_t power_on_indicator_timer_buffer;
+
++// Keychron's common task dispatches this weak board hook after the user
++// handler, wireless handling, and common Keychron processing.
++bool process_record_keychron_kb(uint16_t keycode, keyrecord_t *record) {
++    if (!codex_micro_lab_process_record(keycode, record)) return false;
++    return true;
++}
++
++bool encoder_preprocess_kb(uint8_t index, bool clockwise) {
++    return codex_micro_lab_encoder_preprocess(index, clockwise);
++}
++
+ #ifdef DIP_SWITCH_ENABLE
+@@ -39,6 +44,8 @@ void keychron_task_kb(void) {
+ }
+
+ void keychron_task_kb(void) {
++    codex_micro_lab_task();
++
+     if (power_on_indicator_timer_buffer) {
+         if (timer_elapsed32(power_on_indicator_timer_buffer) > POWER_ON_LED_DURATION) {
+             power_on_indicator_timer_buffer = 0;
+diff --git a/keyboards/keychron/v1_max/rules.mk b/keyboards/keychron/v1_max/rules.mk
+index d3806ddb6..4a15e99f8 100644
+--- a/keyboards/keychron/v1_max/rules.mk
++++ b/keyboards/keychron/v1_max/rules.mk
+@@ -1,3 +1,6 @@
++SRC += codex_micro_lab.c
++OPT_DEFS += -DEECONFIG_USER_DATA_SIZE=64 -DCODEX_MICRO_EECONFIG_OFFSET_API -DCODEX_MICRO_V1_MAX
++
+ KEYCHRON_RGB_ENABLE = yes
+
+ include keyboards/keychron/common/wireless/wireless.mk
+diff --git a/keyboards/keychron/v1_max/info.json b/keyboards/keychron/v1_max/info.json
+index 1e203c155..a8f0cb0b1 100644
+--- a/keyboards/keychron/v1_max/info.json
++++ b/keyboards/keychron/v1_max/info.json
+@@ -1,6 +1,6 @@
+ {
+-    "keyboard_name": "Keychron V1 Max",
+-    "manufacturer": "Keychron",
++    "keyboard_name": "ARkey V1 Max Codex Micro Lab",
++    "manufacturer": "Work Louder",
+     "url": "https://github.com/Keychron",
+     "maintainer": "lokher",
+     "processor": "STM32F401",
+@@ -7,6 +7,6 @@
+     "bootloader": "stm32-dfu",
+     "usb": {
+-        "vid": "0x3434"
++        "vid": "0x303A"
+     },
+     "features": {
+         "bootmagic": true,
+diff --git a/keyboards/keychron/v1_max/ansi_encoder/keyboard.json b/keyboards/keychron/v1_max/ansi_encoder/keyboard.json
+index 916ef1794..5b3c6daa2 100644
+--- a/keyboards/keychron/v1_max/ansi_encoder/keyboard.json
++++ b/keyboards/keychron/v1_max/ansi_encoder/keyboard.json
+@@ -1,7 +1,7 @@
+ {
+     "usb": {
+-        "pid": "0x0913",
+-        "device_version": "1.1.1"
++        "pid": "0x8360",
++        "device_version": "1.0.0"
+     },
+     "layouts": {
+         "LAYOUT_ansi_82": {
+diff --git a/keyboards/keychron/common/keychron_raw_hid.c b/keyboards/keychron/common/keychron_raw_hid.c
+index b3657af..d2230c2 100644
+--- a/keyboards/keychron/common/keychron_raw_hid.c
++++ b/keyboards/keychron/common/keychron_raw_hid.c
+@@ -18,6 +18,7 @@
+ #include "keychron_common.h"
+ #include "keychron_raw_hid.h"
+ #include "raw_hid.h"
++#include "keychron/v1_max/codex_micro_lab.h"
+ #include "version.h"
+ #include "language.h"
+ #ifdef FACTORY_TEST_ENABLE
+@@ -273,6 +274,7 @@ bool kc_raw_hid_rx(uint8_t src, uint8_t *data, uint8_t length) {
+
+ #    if defined(VIA_ENABLE)
+ bool via_command_kb(uint8_t src, uint8_t *data, uint8_t length) {
++    if (src == RAW_HID_SRC_USB && codex_micro_lab_command(data, length)) return true;
+     return kc_raw_hid_rx(src, data, length);
+ }
+
+@@ -282,6 +284,9 @@ void via_raw_hid_send(uint8_t src, uint8_t *data, uint8_t len) {
+ }
+ #    else
+ void raw_hid_receive(uint8_t src, uint8_t *data, uint8_t length) {
++    // V1 Max is built without VIA_ENABLE, so this is its actual USB Raw HID
++    // dispatch path. Handle the Codex Micro config protocol first.
++    if (src == RAW_HID_SRC_USB && codex_micro_lab_command(data, length)) return;
+     kc_raw_hid_rx(src, data, length);
+ }
+ #    endif

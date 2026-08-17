@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mapText, profileDocument, q6ProAnsi, validateProfile } from "../src/profile.js";
+import { mapText, profileDocument, q6ProAnsi, validateProfile, v1MaxAnsiKnob } from "../src/profile.js";
 import { effectCatalog, semanticEffect } from "../src/effects.js";
 import { EffectPrimitive } from "../src/protocol.js";
 
@@ -26,6 +26,18 @@ test("Q6 profile is the canonical 109-control ANSI knob layout", () => {
   assert.equal(new Set(q6ProAnsi.controls.flatMap((control) => control.ledIndex === null ? [] : [control.ledIndex])).size, 108);
   assert.equal(q6ProAnsi.encoder.pressControlId, "r0c13");
   assert.ok(q6ProAnsi.controls.every((control) => control.frame.x >= 0 && control.frame.x <= 1 && control.frame.y >= 0 && control.frame.y <= 1));
+});
+
+test("V1 Max profile is a separate ANSI knob layout with its own transport identity", () => {
+  assert.equal(v1MaxAnsiKnob.profileId, "keychron-v1-max-ansi-knob");
+  assert.equal(v1MaxAnsiKnob.version, 2);
+  assert.equal(v1MaxAnsiKnob.matrix.rows, 6);
+  assert.equal(v1MaxAnsiKnob.matrix.columns, 16);
+  assert.equal(v1MaxAnsiKnob.ledCount, 81);
+  assert.equal(v1MaxAnsiKnob.transports.usb.vendorId, 0x3434);
+  assert.ok(v1MaxAnsiKnob.transports.usb.productIds.includes(0x0913));
+  assert.equal(v1MaxAnsiKnob.encoder.pressControlId, "r0c15");
+  assert.equal(validateProfile(profileDocument(v1MaxAnsiKnob)).layoutHash, v1MaxAnsiKnob.layoutHash);
 });
 
 test("profile document validates its hash and excludes runtime compatibility aliases", () => {

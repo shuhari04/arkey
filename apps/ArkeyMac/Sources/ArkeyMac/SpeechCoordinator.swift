@@ -242,7 +242,7 @@ final class SpeechCoordinator: ObservableObject {
         state = .idle
     }
 
-    /// Returns the Arkey voice flow to idle only after Composer Send has
+    /// Returns the Micro-style voice flow to idle only after Composer Send has
     /// succeeded. A ready transcript never starts a Codex turn on its own.
     func markPromptSent() {
         guard state == .ready else { return }

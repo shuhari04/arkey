@@ -54,6 +54,23 @@ struct ArkeyIconButtonStyle: ButtonStyle {
     }
 }
 
+/// Blue is reserved for a published application update. It is intentionally
+/// not reused for keyboard actions, so it remains recognisable at a glance.
+struct ArkeyUpdateButtonStyle: ButtonStyle {
+    let isAvailable: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 15, weight: .bold))
+            .foregroundStyle(isAvailable ? Color.white : ArkeyTheme.textPrimary)
+            .frame(width: 30, height: 30)
+            .background(isAvailable ? Color.blue.opacity(configuration.isPressed ? 0.68 : 0.90) : Color.clear, in: Circle())
+            .overlay(Circle().stroke(isAvailable ? Color.blue.opacity(0.9) : ArkeyTheme.stroke, lineWidth: 0.75))
+            .scaleEffect(configuration.isPressed ? 0.93 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 private struct ArkeyIconButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let tone: ArkeyButtonTone

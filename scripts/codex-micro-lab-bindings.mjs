@@ -34,9 +34,7 @@ export function deriveCodexMicroMappings(bindingDocument, taskDocument, profile)
   const tasks = new Map(taskDocument.tasks.map((task) => [task.taskId, task]));
   const byTarget = new Map();
   const skipped = [];
-  // Lab firmware permanently owns encoder rotation while connected over USB.
-  // The value remains in the return object for compatibility with older tools.
-  const encoderEnabled = true;
+  let encoderEnabled = false;
 
   for (const binding of [...bindingDocument.bindings].sort(newestFirst)) {
     let target;
@@ -58,6 +56,7 @@ export function deriveCodexMicroMappings(bindingDocument, taskDocument, profile)
     let controlId = binding.controlId;
     if (controlId === profile.encoder?.id) {
       controlId = profile.encoder.pressControlId;
+      if (binding.actionId === "reasoning") encoderEnabled = true;
     }
     const control = controls.get(controlId);
     if (!control?.matrix) {

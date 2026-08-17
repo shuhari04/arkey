@@ -2,7 +2,9 @@ import SwiftUI
 
 struct DeveloperLightingDrawer: View {
     @ObservedObject var store: CommandSurfaceStore
+    @ObservedObject var controller: ArkeyController
     @Binding var isPresented: Bool
+    @AppStorage("arkey.legacyExperiments.enabled") private var legacyExperimentsEnabled = false
     @State private var semanticState: AgentTaskState = .working
     @State private var advancedParametersExpanded = false
     @State private var showingHardwareReason = false
@@ -25,6 +27,7 @@ struct DeveloperLightingDrawer: View {
                     primitiveSection
                     parameterSection
                     hardwareSection
+                    legacySection
                 }
                 .padding(18)
             }
@@ -190,6 +193,54 @@ struct DeveloperLightingDrawer: View {
                     .help("USB v2 · profile hash 已匹配")
                     .accessibilityLabel("USB v2 与 profile hash 已匹配")
             }
+        }
+    }
+
+    private var legacySection: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("启用", isOn: $legacyExperimentsEnabled)
+                    .accessibilityLabel("启用 Legacy experiments")
+                Text("可能通过 System Events 控制前台应用")
+                    .font(.caption2)
+                    .foregroundStyle(ArkeyTheme.warning)
+                HStack(spacing: 5) {
+                    ForEach([AgentControlAction.optionOne, .optionTwo, .optionThree, .yes, .no, .enter]) { action in
+                        Button {
+                            Task { await controller.performAgentAction(action) }
+                        } label: {
+                            Image(systemName: action.symbol)
+                        }
+                        .buttonStyle(ArkeyIconButtonStyle(size: 28))
+                        .accessibilityLabel(action.title)
+                        .help("Legacy System Events：\(action.title)")
+                    }
+                }
+                .disabled(!legacyExperimentsEnabled)
+                HStack {
+                    Button("启动 daemon") { Task { await controller.start() } }
+                        .buttonStyle(ArkeyControlButtonStyle(compact: true))
+                    Button("停止") { Task { await controller.stop() } }
+                        .buttonStyle(ArkeyControlButtonStyle(tone: .danger, compact: true))
+                    Button("Restore") { Task { await controller.restore() } }
+                        .buttonStyle(ArkeyControlButtonStyle(compact: true))
+                }
+                .disabled(!legacyExperimentsEnabled)
+                HStack {
+                    Button("随机灯") { Task { await controller.testRandom() } }
+                        .buttonStyle(ArkeyControlButtonStyle(compact: true))
+                    Button("文本回放") { Task { await controller.playText() } }
+                        .buttonStyle(ArkeyControlButtonStyle(compact: true))
+                }
+                .disabled(!legacyExperimentsEnabled)
+                TextField("Legacy 文本回放", text: $controller.sampleText)
+                    .disabled(!legacyExperimentsEnabled)
+            }
+            .padding(.top, 9)
+        } label: {
+            Label("Legacy experiments", systemImage: "hammer")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ArkeyTheme.textSecondary)
         }
     }
 

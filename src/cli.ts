@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import { ArkeyDaemon, observeRuntimeEvents, sendMessage, sendRpc } from "./runtime.js";
 import { AgentState } from "./protocol.js";
-import { installLaunchAgent, stopLaunchAgent } from "./install.js";
+import { installHooks, installLaunchAgent, stopLaunchAgent } from "./install.js";
+import { runClaude, runCodex } from "./wrappers.js";
+import { stateForHook } from "./events.js";
 import { KeyboardTransport } from "./transport.js";
 
 const [command = "help", ...args] = process.argv.slice(2);
@@ -42,6 +45,17 @@ async function main(): Promise<void> {
       await sendMessage({ type: "text", source: "manual", text });
       console.log("Text lighting preview sent."); return;
     }
+    case "install-hooks": {
+      const paths = installHooks(process.argv[1]); console.log(`Hooks installed without replacing existing entries:\n${paths.join("\n")}`); return;
+    }
+    case "event": {
+      const [source, event] = args as ["codex" | "claude", string];
+      const input = readFileSync(0, "utf8"); let payload: unknown = {};
+      try { payload = input ? JSON.parse(input) : {}; } catch { /* Never persist or echo hook payloads. */ }
+      await sendMessage({ type: "event", source, state: stateForHook(event ?? "start", payload) }).catch(() => undefined); return;
+    }
+    case "codex": process.exitCode = await runCodex(args); return;
+    case "claude": process.exitCode = await runClaude(args); return;
     case "restore": await sendMessage({ type: "restore" }); console.log("Restore requested."); return;
     case "rpc": {
       const method = args[0];
@@ -86,6 +100,6 @@ function previewState(value = ""): AgentState {
   return state;
 }
 function sleep(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
-function help(): string { return `Arkey 0.1.0\n\nCommands:\n  start | stop | status | test | restore\n  preview <thinking|tool|streaming|complete|error> [milliseconds]\n  text <characters>\n  rpc <method> [json-params]\n  observe --jsonl`; }
+function help(): string { return `Arkey 0.1.0\n\nCommands:\n  start | stop | status | test | restore\n  preview <thinking|tool|streaming|complete|error> [milliseconds]\n  text <characters>\n  rpc <method> [json-params]\n  observe --jsonl\n  install-hooks\n  codex -- <codex exec arguments>\n  claude -- <claude print arguments>`; }
 
 main().catch((error) => { console.error(`arkey: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; });

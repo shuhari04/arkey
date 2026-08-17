@@ -41,86 +41,6 @@ struct CommandSurfaceTests {
         #expect(oversized.stroke(1.8) == 1.8)
     }
 
-    @Test("Codex Micro starts with the native 13-slot Q6 mapping and permanent encoder control")
-    func codexMicroNativeDefaults() {
-        let expected: [CodexMicroLabTarget: CodexMicroLabPosition] = [
-            .agent1: .init(row: 4, column: 17),
-            .agent2: .init(row: 4, column: 18),
-            .agent3: .init(row: 4, column: 19),
-            .agent4: .init(row: 3, column: 17),
-            .agent5: .init(row: 3, column: 18),
-            .agent6: .init(row: 3, column: 19),
-            .command1: .init(row: 2, column: 20),
-            .command2: .init(row: 0, column: 17),
-            .command3: .init(row: 0, column: 20),
-            .command4: .init(row: 0, column: 18),
-            .command5: .init(row: 5, column: 18),
-            .command6: .init(row: 4, column: 20),
-            .encoderPress: .init(row: 0, column: 13)
-        ]
-
-        #expect(CodexMicroLabSnapshot.nativeDefault.mappings == expected)
-        #expect(CodexMicroLabSnapshot.nativeDefault.encoderEnabled)
-        #expect(CodexMicroLabSnapshot.nativeDefault.mappings.count == 13)
-        #expect(CodexMicroLabSnapshot.nativeDefault.mappings[.joystickUp] == nil)
-        #expect(CodexMicroLabSnapshot.nativeDefault.mappings[.joystickRight] == nil)
-        #expect(CodexMicroLabSnapshot.nativeDefault.mappings[.joystickDown] == nil)
-        #expect(CodexMicroLabSnapshot.nativeDefault.mappings[.joystickLeft] == nil)
-    }
-
-    @Test("Codex Micro cached and read-back snapshots cannot disable the encoder")
-    func codexMicroEncoderIsPermanent() {
-        let custom: [CodexMicroLabTarget: CodexMicroLabPosition] = [
-            .agent1: .init(row: 1, column: 2)
-        ]
-        let disabled = CodexMicroLabSnapshot(
-            mappings: custom,
-            encoderEnabled: false,
-            verification: .verified
-        )
-        let normalized = CodexMicroLabSnapshot.normalizedForClient(disabled)
-
-        #expect(normalized.encoderEnabled)
-        #expect(normalized.mappings == custom)
-        #expect(normalized.verification == .verified)
-    }
-
-    @Test("Codex Micro connection fallback never treats a failed readback as empty EEPROM")
-    func codexMicroFailedReadbackPreservesCachedMapping() {
-        let cached = CodexMicroLabSnapshot(
-            mappings: [.agent3: .init(row: 2, column: 4)],
-            encoderEnabled: true,
-            verification: .verified
-        )
-
-        let resolved = CodexMicroLabSnapshot.resolvedForConnection(
-            readback: nil,
-            fallback: cached
-        )
-
-        #expect(resolved.mappings == cached.mappings)
-        #expect(resolved.encoderEnabled)
-        #expect(resolved.verification == .pendingReadback)
-    }
-
-    @Test("Codex Micro explicit empty readback remains empty")
-    func codexMicroExplicitEmptyReadbackIsNotReset() {
-        let emptyReadback = CodexMicroLabSnapshot(
-            mappings: [:],
-            encoderEnabled: true,
-            verification: .verified
-        )
-
-        let resolved = CodexMicroLabSnapshot.resolvedForConnection(
-            readback: emptyReadback,
-            fallback: .nativeDefault
-        )
-
-        #expect(resolved.mappings.isEmpty)
-        #expect(resolved.encoderEnabled)
-        #expect(resolved.verification == .verified)
-    }
-
     @Test("request user input requires a non-empty answer for every unique question")
     func requestUserInputValidation() {
         let questions: [[String: Any]] = [["id": "choice"]]
@@ -228,7 +148,7 @@ struct CommandSurfaceTests {
         #expect(ArkeyLightingMath.semanticBrightness(-1, globalLuminance: -1) == 0)
     }
 
-    @Test("Swift client consumes the canonical AgentGlow effect catalog")
+    @Test("Swift client consumes the canonical Micro effect catalog")
     func canonicalEffectCatalog() throws {
         let data = try Data(contentsOf: repositoryRoot.appendingPathComponent("profiles/effects-v1.json"))
         let catalog = try JSONDecoder().decode(EffectCatalogDocument.self, from: data)
@@ -237,6 +157,63 @@ struct CommandSurfaceTests {
         #expect(catalog.semantics["completeUnread"]?.entryPrimitive == .riseFade)
         #expect(catalog.semantics["requiresInput"]?.entryPrimitive == .doublePulse)
         #expect(catalog.voice["recording"]?.hex == "#20E0B2")
+    }
+
+    @Test("Codex Micro Lab configuration reports retain the isolated 64-byte framing")
+    func codexMicroLabProtocolFraming() {
+        let report = CodexMicroLabProtocol.encode(opcode: .set, sequence: 42, payload: [0, 4, 17])
+        #expect(report.count == 64)
+        #expect(report[0] == CodexMicroLabProtocol.reportID)
+        #expect(report[1] == CodexMicroLabProtocol.magic)
+        #expect(report[3] == CodexMicroLabProtocol.Opcode.set.rawValue)
+        #expect(CodexMicroLabProtocol.decode(report) == .init(opcode: CodexMicroLabProtocol.Opcode.set.rawValue, sequence: 42, payload: [0, 4, 17]))
+        let output = CodexMicroLabService.outputReportBuffer(report, reportID: CodexMicroLabProtocol.reportID)
+        #expect(output.count == 64)
+        #expect(output.first == CodexMicroLabProtocol.reportID)
+        let macOSPaddedBody = Array(report.dropFirst()) + [0]
+        #expect(CodexMicroLabProtocol.decode(macOSPaddedBody) == .init(opcode: CodexMicroLabProtocol.Opcode.set.rawValue, sequence: 42, payload: [0, 4, 17]))
+        let v1PlaceholderBody = [UInt8(0)] + Array(report.dropFirst())
+        #expect(CodexMicroLabProtocol.decode(v1PlaceholderBody) == .init(opcode: CodexMicroLabProtocol.Opcode.set.rawValue, sequence: 42, payload: [0, 4, 17]))
+        let v1ShortPlaceholderBody = [UInt8(0)] + Array(report.dropFirst().dropLast())
+        #expect(CodexMicroLabProtocol.decode(v1ShortPlaceholderBody) == .init(opcode: CodexMicroLabProtocol.Opcode.set.rawValue, sequence: 42, payload: [0, 4, 17]))
+        let v1DoublePrefixedBody = [UInt8(0), CodexMicroLabProtocol.reportID] + Array(report.dropFirst().dropLast())
+        #expect(CodexMicroLabProtocol.decode(v1DoublePrefixedBody) == .init(opcode: CodexMicroLabProtocol.Opcode.set.rawValue, sequence: 42, payload: [0, 4, 17]))
+        #expect(CodexMicroLabTarget.command1.shortTitle == "ACT06")
+        #expect(CodexMicroLabTarget.command5.shortTitle == "ACT10")
+        #expect(CodexMicroLabTarget.command5.title.contains("原生 PTT"))
+        #expect(CodexMicroLabTarget.command5.configurationHint?.contains("350 ms") == true)
+        #expect(CodexMicroLabTarget.command6.shortTitle == "ACT12")
+
+        let dfu = CodexMicroLabProtocol.encode(opcode: .enterDFU, sequence: 43, payload: Array("DFU!".utf8))
+        #expect(CodexMicroLabProtocol.decode(dfu) == .init(opcode: CodexMicroLabProtocol.Opcode.enterDFU.rawValue, sequence: 43, payload: Array("DFU!".utf8)))
+    }
+
+    @Test("V1 Max default Micro map matches the firmware layout")
+    func v1MaxCodexMicroDefaults() {
+        let snapshot = CodexMicroLabSnapshot.v1MaxDefaults
+        #expect(snapshot.mappings[.agent1] == .init(row: 1, column: 15))
+        #expect(snapshot.mappings[.agent2] == .init(row: 2, column: 15))
+        #expect(snapshot.mappings[.command5] == .init(row: 3, column: 15))
+        #expect(snapshot.mappings[.encoderPress] == .init(row: 0, column: 15))
+        #expect(snapshot.encoderEnabled)
+    }
+
+    @Test("Lab product names select the physical Q6 or V1 profile")
+    func codexMicroLabProfileSelection() {
+        #expect(CodexMicroLabProtocol.keyboardProfileID(forProductName: "ARkey V1 Max Codex Micro Lab") == "keychron-v1-max-ansi-knob")
+        #expect(CodexMicroLabProtocol.keyboardProfileID(forProductName: "Arkey Codex Micro Lab") == "keychron-q6-pro-ansi")
+    }
+
+    @Test("Codex Micro Lab snapshot cache survives a pending readback")
+    func codexMicroLabSnapshotCache() throws {
+        let snapshot = CodexMicroLabSnapshot(
+            mappings: [.agent1: .init(row: 4, column: 17)],
+            encoderEnabled: true,
+            verification: .pendingReadback
+        )
+        let restored = try JSONDecoder().decode(CodexMicroLabSnapshot.self, from: JSONEncoder().encode(snapshot))
+        #expect(restored == snapshot)
+        #expect(restored.verification.detail.contains("暂不能读回"))
     }
 
     @Test("runtime events update dynamic actions and stop a stale client preview")

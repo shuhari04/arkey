@@ -157,7 +157,8 @@ export function profileDocument(profile: KeyboardProfile): KeyboardProfileDocume
 
 export const profileDirectory = findProfilesDirectory();
 export const q6ProAnsi = loadProfile(join(profileDirectory, "keychron-q6-pro-ansi.json"));
-export const profiles: KeyboardProfile[] = [q6ProAnsi];
+export const v1MaxAnsiKnob = loadProfile(join(profileDirectory, "keychron-v1-max-ansi-knob.json"));
+export const profiles: KeyboardProfile[] = [q6ProAnsi, v1MaxAnsiKnob];
 
 export function mapText(profile: KeyboardProfile, text: string): number[] {
   const fallback = profile.characterMap[" "];

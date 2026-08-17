@@ -14,19 +14,21 @@ is_release_path() {
     .github/workflows/ci.yml|.gitignore|AGENTS.md|CONTRIBUTING.md|LICENSE|README.md|SECURITY.md|THIRD_PARTY_NOTICES.md|TRADEMARKS.md|package.json|package-lock.json|tsconfig.json) return 0 ;;
     LICENSES/GPL-2.0-only.txt|LICENSES/MIT.txt|LICENSES/PolyForm-Noncommercial-1.0.0.txt) return 0 ;;
     assets/arkey-logo.png) return 0 ;;
-    apps/ArkeyMac/Package.swift|apps/ArkeyMac/Package.resolved) return 0 ;;
+    apps/ArkeyMac/Package.swift|apps/ArkeyMac/Package.resolved|apps/ArkeyMac/Launcher/ArkeyLauncher.c) return 0 ;;
     apps/ArkeyMac/Resources/Info.plist|apps/ArkeyMac/Resources/Arkey.icns|apps/ArkeyMac/Resources/Arkey.iconset/*.png) return 0 ;;
     apps/ArkeyMac/Sources/ArkeyMac/*.swift|apps/ArkeyMac/Sources/ArkeyMac/Resources/arkey.png) return 0 ;;
     apps/ArkeyMac/Tests/ArkeyMacTests/*.swift) return 0 ;;
     docs/ARCHITECTURE.md|docs/CODEX_MICRO_LAB.md|docs/FIRMWARE.md|docs/PORTING_QMK.md) return 0 ;;
-    firmware/UPSTREAM.md|firmware/keychron-q6-pro.patch) return 0 ;;
+    firmware/UPSTREAM.md|firmware/keychron-q6-pro.patch|firmware/keychron-v1-max-ansi.patch) return 0 ;;
     firmware/codex-micro-lab-q6-pro.patch|firmware/codex-micro-lab-qmk-hid.patch|firmware/codex-micro-lab-qmk-encoder.patch) return 0 ;;
-    firmware/qmk/arkey.c|firmware/qmk/arkey.h|firmware/qmk/arkey_generated.h|firmware/qmk/rgb_matrix_kb.inc) return 0 ;;
+    firmware/codex-micro-lab-v1-max.patch|firmware/codex-micro-lab-v1-max-hid.patch|firmware/codex-micro-lab-v1-max-encoder.patch) return 0 ;;
+    firmware/qmk/arkey.c|firmware/qmk/arkey.h|firmware/qmk/arkey_generated.h|firmware/qmk/arkey_v1max_generated.h|firmware/qmk/rgb_matrix_kb.inc) return 0 ;;
     firmware/qmk/codex_micro_lab.c|firmware/qmk/codex_micro_lab.h) return 0 ;;
-    profiles/effects-schema.json|profiles/effects-v1.json|profiles/keychron-q6-pro-ansi.json|profiles/schema.json) return 0 ;;
-    scripts/audit-release.sh|scripts/build-macos-app.sh|scripts/build-q6-pro.sh|scripts/check-codex-app-server.sh|scripts/check-command-surface.sh|scripts/generate-firmware-contract.mjs) return 0 ;;
-    scripts/build-codex-micro-lab-q6-pro.sh|scripts/codex-micro-lab-bindings.mjs|scripts/codex-micro-lab-config.mjs) return 0 ;;
-    src/*.ts|test/*.test.ts) return 0 ;;
+    profiles/effects-schema.json|profiles/effects-v1.json|profiles/keychron-q6-pro-ansi.json|profiles/keychron-v1-max-ansi-knob.json|profiles/schema.json) return 0 ;;
+    scripts/audit-release.sh|scripts/build-macos-app.sh|scripts/build-q6-pro.sh|scripts/build-v1-max-ansi.sh|scripts/check-codex-app-server.sh|scripts/check-command-surface.sh|scripts/generate-firmware-contract.mjs|scripts/generate-v1-max-profile.mjs) return 0 ;;
+    scripts/build-codex-micro-lab-q6-pro.sh|scripts/build-codex-micro-lab-v1-max.sh|scripts/codex-micro-lab-bindings.mjs|scripts/codex-micro-lab-config.mjs|scripts/v1max-hid-probe.swift) return 0 ;;
+    scripts/build-release-manifest.mjs|scripts/seal-release-manifest.mjs|scripts/publish-arkey-release.sh|scripts/make-v1max-dmg.sh|scripts/make-v1max-firmware-dmg.sh|scripts/v1max-firmware-utility.command) return 0 ;;
+    server/arkey-diagnostics-api.mjs|src/*.ts|test/*.test.ts|test/*.test.mjs) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -34,14 +36,15 @@ is_release_path() {
 is_sensitive_path() {
   case "$1" in
     README.md|AGENTS.md|CONTRIBUTING.md|LICENSE|THIRD_PARTY_NOTICES.md|package.json|package-lock.json) return 0 ;;
-    docs/ARCHITECTURE.md|docs/CODEX_MICRO_LAB.md) return 0 ;;
-    .github/workflows/ci.yml|scripts/audit-release.sh|scripts/build-macos-app.sh) return 0 ;;
-    apps/ArkeyMac/Sources/ArkeyMac/CodexMicroLab*.swift) return 0 ;;
+    docs/ARCHITECTURE.md|docs/CODEX_MICRO_LAB.md|docs/FIRMWARE.md) return 0 ;;
+    .github/workflows/ci.yml|scripts/audit-release.sh|scripts/build-macos-app.sh|scripts/make-v1max-dmg.sh|scripts/make-v1max-firmware-dmg.sh|scripts/publish-arkey-release.sh) return 0 ;;
+    apps/ArkeyMac/Sources/ArkeyMac/CodexMicroLab*.swift|apps/ArkeyMac/Sources/ArkeyMac/CodexMicroMappingWorkspaceView.swift|apps/ArkeyMac/Sources/ArkeyMac/FirmwareFlashingService.swift) return 0 ;;
     apps/ArkeyMac/Sources/ArkeyMac/CommandSurfaceStore.swift|apps/ArkeyMac/Sources/ArkeyMac/ContentView.swift|apps/ArkeyMac/Sources/ArkeyMac/KeyboardStageView.swift|apps/ArkeyMac/Sources/ArkeyMac/OnboardingFlowView.swift) return 0 ;;
     apps/ArkeyMac/Tests/ArkeyMacTests/*.swift) return 0 ;;
     firmware/codex-micro-lab-*.patch|firmware/qmk/codex_micro_lab.c|firmware/qmk/codex_micro_lab.h) return 0 ;;
-    scripts/build-codex-micro-lab-q6-pro.sh|scripts/codex-micro-lab-bindings.mjs|scripts/codex-micro-lab-config.mjs) return 0 ;;
-    test/codex-micro-lab*.test.ts) return 0 ;;
+    profiles/keychron-v1-max-ansi-knob.json|src/profile.ts|src/runtime.ts|src/transport.ts) return 0 ;;
+    scripts/build-codex-micro-lab-q6-pro.sh|scripts/build-codex-micro-lab-v1-max.sh|scripts/codex-micro-lab-bindings.mjs|scripts/codex-micro-lab-config.mjs|scripts/v1max-hid-probe.swift|scripts/v1max-firmware-utility.command) return 0 ;;
+    server/arkey-diagnostics-api.mjs|test/codex-micro-lab*.test.ts|test/codex-micro-lab*.test.mjs) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -74,9 +77,12 @@ apps/ArkeyMac/Sources/ArkeyMac/CodexMicroLabConfiguratorView.swift
 firmware/codex-micro-lab-q6-pro.patch
 firmware/codex-micro-lab-qmk-hid.patch
 firmware/codex-micro-lab-qmk-encoder.patch
+firmware/codex-micro-lab-v1-max.patch
 firmware/qmk/codex_micro_lab.c
 firmware/qmk/codex_micro_lab.h
 scripts/build-codex-micro-lab-q6-pro.sh
+scripts/build-codex-micro-lab-v1-max.sh
+scripts/build-v1-max-ansi.sh
 scripts/codex-micro-lab-bindings.mjs
 scripts/codex-micro-lab-config.mjs
 test/codex-micro-lab.test.ts
@@ -91,7 +97,7 @@ for path in $required_files; do
 done
 
 bad_names=$(
-  printf '%s\n' "$candidates" | grep -E '(^|/)(node_modules|dist|build|\.build|\.swiftpm|research)(/|$)|(^|/)\.DS_Store$|(^|/).*(RESEARCH|REPORT|STRATEGY|AUDIT|HANDOFF|NOTES).*\.md$|(^|/)(AGENT_HANDOFF|PREFLIGHT-AUDIT)\.md$|\.(bin|hex|uf2|zip|tar|gz)$' || true
+  printf '%s\n' "$candidates" | grep -E '(^|/)(node_modules|dist|build|\.build|\.swiftpm|research)(/|$)|(^|/)\.DS_Store$|(^|/).*(RESEARCH|REPORT|STRATEGY|AUDIT|HANDOFF|NOTES).*\.md$|(^|/)(AGENT_HANDOFF|PREFLIGHT-AUDIT)\.md$|\.(bin|hex|uf2|dmg|zip|tar|gz)$' || true
 )
 if [ -n "$bad_names" ]; then
   echo "Release audit failed: generated, binary, archive, or process-report files are present:" >&2
@@ -164,6 +170,8 @@ for (const path of [
   "apps/ArkeyMac/Tests",
   "docs/CODEX_MICRO_LAB.md",
   "scripts/build-codex-micro-lab-q6-pro.sh",
+  "scripts/build-codex-micro-lab-v1-max.sh",
+  "scripts/build-v1-max-ansi.sh",
   "scripts/codex-micro-lab-bindings.mjs",
   "scripts/codex-micro-lab-config.mjs",
   "test/codex-micro-lab.test.ts",

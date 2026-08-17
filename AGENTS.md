@@ -1,8 +1,9 @@
 # Instructions for coding agents
 
 This repository is intentionally narrow: an unofficial Codex App Server client,
-an Arkey host daemon, AgentGlow lighting, board-specific QMK examples, and one
-isolated, development-only Codex Micro Lab experiment for the Q6 Pro.
+an Arkey host daemon, AgentGlow lighting, board-specific QMK examples, and
+isolated, development-only Codex Micro Lab experiments for the Q6 Pro and
+V1 Max ANSI Knob.
 
 ## Read before changing code
 
@@ -16,8 +17,9 @@ isolated, development-only Codex Micro Lab experiment for the Q6 Pro.
 
 - Standard Arkey builds and new board ports must never use a third-party USB
   identity or native-facing Micro compatibility behavior.
-- The sole exception is the explicitly named `codex-micro-lab` Q6 Pro experiment
-  documented in `docs/CODEX_MICRO_LAB.md`. Keep identity/protocol material in
+- The sole exception is the explicitly named `codex-micro-lab` Q6 Pro and V1 Max
+  ANSI Knob experiments documented in `docs/CODEX_MICRO_LAB.md`. Keep
+  identity/protocol material in
   its release-audited Lab paths; do not add a private SDK, vendor source/assets,
   production claim, commercial workflow, or automatic enablement.
 - Do not map App Server-only Skill/Cancel actions onto joystick directions.

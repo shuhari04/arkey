@@ -11,6 +11,10 @@ enum CommandSurfaceMessageSeverity: Equatable {
 @MainActor
 final class CommandSurfaceStore: ObservableObject {
     @Published var profile = Q6FallbackProfile.profile
+    /// Visual-only keyboard choice. It never changes the active daemon profile
+    /// or writes a hardware layout, so Q6 Pro can be inspected safely while a
+    /// V1 Max is connected (and vice versa).
+    @Published var keyboardPreviewProfileId: String?
     @Published var effectCatalog = EffectCatalogDocument.fallback
     @Published var dock = CommandSurfaceDefaults.initialDock()
     @Published var bindings: [String: CommandBinding] = [:]
@@ -63,7 +67,8 @@ final class CommandSurfaceStore: ObservableObject {
     @Published var workflowPreviewText = ""
     @Published private(set) var isCodexMicroLab = false
     @Published var selectedCodexMicroTarget: CodexMicroLabTarget = .agent1
-    @Published private(set) var codexMicroLabSnapshot = CodexMicroLabSnapshot.nativeDefault
+    @Published private(set) var codexMicroSelectionActive = false
+    @Published private(set) var codexMicroLabSnapshot = CodexMicroLabSnapshot.empty
 
     private let controller: ArkeyController
     private let observer = ArkeyEventObserver()
@@ -72,6 +77,7 @@ final class CommandSurfaceStore: ObservableObject {
     private var previewStopTask: Task<Void, Never>?
     private var observerRetryTask: Task<Void, Never>?
     private var observerRetrySeconds = 1
+    private var observerFailureWasPresented = false
     private var started = false
     private var stopping = false
     private var dockState = DockStackState.initial
@@ -90,6 +96,7 @@ final class CommandSurfaceStore: ObservableObject {
     private var captureCommandSerial: UInt64 = 0
     private var captureCommandTail: Task<Void, Never>?
     @Published private var transientRevision = 0
+    private var bundledKeyboardProfiles: [KeyboardProfileV2] = []
 
     private struct CaptureStartRequest: Equatable {
         let revision: UInt64
@@ -104,6 +111,7 @@ final class CommandSurfaceStore: ObservableObject {
         self.controller = controller
         selectedActionId = dock.first?.id
         loadCanonicalProfileFromDisk()
+        loadBundledKeyboardProfiles()
         loadCanonicalEffectsFromDisk()
         developerEffect.atmosphereMix = effectCatalog.atmosphereMix
         loadCodexMicroLabCache()
@@ -121,6 +129,26 @@ final class CommandSurfaceStore: ObservableObject {
 
     var selectedTask: AgentTaskSlot? {
         tasks.first(where: { $0.id == selectedTaskId }) ?? tasks.first(where: { $0.selected }) ?? tasks.first
+    }
+
+    var availableKeyboardProfiles: [KeyboardProfileV2] {
+        var profiles = bundledKeyboardProfiles
+        if !profiles.contains(where: { $0.profileId == profile.profileId }) {
+            profiles.append(profile)
+        }
+        return profiles.sorted { $0.name < $1.name }
+    }
+
+    var displayedKeyboardProfile: KeyboardProfileV2 {
+        if let keyboardPreviewProfileId,
+           let selected = availableKeyboardProfiles.first(where: { $0.profileId == keyboardPreviewProfileId }) {
+            return selected
+        }
+        return profile
+    }
+
+    func selectKeyboardPreview(_ profileId: String?) {
+        keyboardPreviewProfileId = profileId
     }
 
     var sortedTasks: [AgentTaskSlot] {
@@ -147,7 +175,7 @@ final class CommandSurfaceStore: ObservableObject {
     }
 
     var hardwarePreviewDisabledReason: String? {
-        if isCodexMicroLab { return "Codex Micro Lab 由 Codex Desktop 自行驱动灯光；Arkey daemon 不写入该模式。" }
+        if isCodexMicroLab { return "Codex Micro Lab 由 Codex Desktop 自行驱动灯光；ARkey daemon 不写入该模式。" }
         if transport == .bluetooth { return "Bluetooth 模式没有 Raw HID 灯效通道。" }
         if transport != .usb { return "未检测到 USB 键盘。" }
         if deviceSupport == "via-only" { return "VIA-only firmware 没有 ARkey 单键灯效协议。" }
@@ -207,6 +235,16 @@ final class CommandSurfaceStore: ObservableObject {
         await controller.refresh()
         apply(status: controller.status)
 
+        // A shared ~/.arkey socket can still be served by an older board
+        // package. Restart it when its declared profile differs from the app's
+        // bundled profile, rather than rendering a misleading fallback layout.
+        if let daemonProfileId = controller.status?.profileId,
+           daemonProfileId != profile.profileId {
+            await controller.stop()
+            await controller.start()
+            apply(status: controller.status)
+        }
+
         do {
             let response = try await ArkeyCommand.rpc("profile.get")
             if let decoded = decodeProfile(from: response) {
@@ -217,7 +255,7 @@ final class CommandSurfaceStore: ObservableObject {
             }
             applyProfileConnection(response)
         } catch {
-            publishMessage("使用内置 Q6 Pro 布局；daemon profile 暂不可用。", severity: .warning)
+            publishMessage("使用内置 \(profile.name) 布局；daemon profile 暂不可用。", severity: .warning)
         }
 
         if let response = try? await ArkeyCommand.rpc("settings.get") { applySettings(response) }
@@ -235,7 +273,13 @@ final class CommandSurfaceStore: ObservableObject {
     }
 
     func selectCodexMicroTarget(_ target: CodexMicroLabTarget) {
+        if codexMicroSelectionActive && selectedCodexMicroTarget == target {
+            codexMicroSelectionActive = false
+            message = "已取消槽位选择；点击键帽不会改写现有 Codex Micro 映射。"
+            return
+        }
         selectedCodexMicroTarget = target
+        codexMicroSelectionActive = true
         message = "已选择 \(target.title)；现在点击要接入的实体键。该键会变为 Micro 独占。"
     }
 
@@ -247,7 +291,7 @@ final class CommandSurfaceStore: ObservableObject {
     }
 
     func bindCodexMicroTarget(to controlId: String) async {
-        guard isCodexMicroLab,
+        guard isCodexMicroLab, codexMicroSelectionActive,
               let control = profile.controls.first(where: { $0.id == controlId }),
               control.bindable,
               let row = control.matrixRow,
@@ -257,18 +301,15 @@ final class CommandSurfaceStore: ObservableObject {
             return
         }
 
+        let target = selectedCodexMicroTarget
         let position = CodexMicroLabPosition(row: UInt8(row), column: UInt8(column))
         do {
-            try codexMicroLab.setMapping(target: selectedCodexMicroTarget, position: position)
-            var snapshot = codexMicroLabSnapshot
-            snapshot.mappings = snapshot.mappings.filter { $0.key != selectedCodexMicroTarget && $0.value != position }
-            snapshot.mappings[selectedCodexMicroTarget] = position
-            snapshot.encoderEnabled = true
-            snapshot.verification = .pendingReadback
+            let snapshot = try codexMicroLab.setMapping(target: target, position: position)
             applyCodexMicroLabSnapshot(snapshot, persist: true)
             selectedControlId = controlId
             lastBoundControlId = controlId
-            message = "\(selectedCodexMicroTarget.title) 已写入 \(control.label)。该键不再输出普通按键；\(snapshot.verification.detail)"
+            codexMicroSelectionActive = false
+            message = "\(target.title) 已写入 \(control.label)，并已从固件读回验证。已取消选择，避免误改。"
         } catch {
             publishMessage(error.localizedDescription, severity: .error)
         }
@@ -277,13 +318,21 @@ final class CommandSurfaceStore: ObservableObject {
     func clearCodexMicroTarget(_ target: CodexMicroLabTarget? = nil) async {
         let target = target ?? selectedCodexMicroTarget
         do {
-            try codexMicroLab.clearMapping(target: target)
-            var snapshot = codexMicroLabSnapshot
-            snapshot.mappings.removeValue(forKey: target)
-            snapshot.encoderEnabled = true
-            snapshot.verification = .pendingReadback
+            let snapshot = try codexMicroLab.clearMapping(target: target)
             applyCodexMicroLabSnapshot(snapshot, persist: true)
-            message = "\(target.title) 已清除；原实体键已恢复普通输入。\(snapshot.verification.detail)"
+            message = "\(target.title) 已清除并读回验证；原实体键已恢复普通输入。"
+        } catch {
+            publishMessage(error.localizedDescription, severity: .error)
+        }
+    }
+
+    func setCodexMicroEncoderEnabled(_ enabled: Bool) async {
+        do {
+            let snapshot = try codexMicroLab.setEncoderEnabled(enabled)
+            applyCodexMicroLabSnapshot(snapshot, persist: true)
+            message = enabled
+                ? "旋钮已由 Codex Micro 独占并读回验证；旋转不会再调节系统音量。"
+                : "旋钮已恢复 Q6/VIA 原始映射并读回验证（通常为系统音量）。"
         } catch {
             publishMessage(error.localizedDescription, severity: .error)
         }
@@ -948,15 +997,22 @@ final class CommandSurfaceStore: ObservableObject {
 
     private func startObserver() {
         observerRetryTask?.cancel()
+        // Codex Micro Lab is driven by its own HID service, and an unavailable
+        // daemon has no event socket to observe. Avoid creating a short-lived
+        // `observe` process in either case; that was the source of the
+        // repeating “事件流尚未连接” banner on Macs without a local daemon.
+        guard !isCodexMicroLab, controller.status?.running == true else { return }
         do {
             try observer.start { [weak self] line in
                 Task { @MainActor in self?.handleEventLine(line) }
             } onTermination: { [weak self] _ in
                 Task { @MainActor in self?.scheduleObserverReconnect() }
             }
-            observerRetrySeconds = 1
         } catch {
-            publishMessage("事件流尚未连接：\(error.localizedDescription)", severity: .warning)
+            if !observerFailureWasPresented {
+                observerFailureWasPresented = true
+                publishMessage("事件流暂不可用：\(error.localizedDescription)", severity: .warning)
+            }
             scheduleObserverReconnect()
         }
     }
@@ -976,6 +1032,10 @@ final class CommandSurfaceStore: ObservableObject {
     func handleEventLine(_ line: String) {
         guard let data = line.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        // A parsable event confirms the stream is genuinely live. Only then
+        // reset reconnect backoff and allow a future failure to be surfaced.
+        observerRetrySeconds = 1
+        observerFailureWasPresented = false
         let type = (json["type"] as? String) ?? (json["event"] as? String) ?? ""
         let payload = json["data"] as? [String: Any] ?? json
         switch type {
@@ -1542,6 +1602,34 @@ final class CommandSurfaceStore: ObservableObject {
         }
     }
 
+    private func loadBundledKeyboardProfiles() {
+        let fileManager = FileManager.default
+        let fileNames = ["keychron-q6-pro-ansi", "keychron-v1-max-ansi-knob"]
+        var candidates: [URL] = []
+        for name in fileNames {
+            if let bundled = Bundle.main.url(forResource: name, withExtension: "json") {
+                candidates.append(bundled)
+            }
+        }
+        var directory = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
+        for _ in 0..<5 {
+            for name in fileNames {
+                candidates.append(directory.appendingPathComponent("profiles/\(name).json"))
+            }
+            directory.deleteLastPathComponent()
+        }
+        let decoder = JSONDecoder()
+        let decodedProfiles: [KeyboardProfileV2] = candidates.compactMap { candidate in
+            guard fileManager.isReadableFile(atPath: candidate.path),
+                  let data = try? Data(contentsOf: candidate),
+                  let decoded = try? decoder.decode(KeyboardProfileV2.self, from: data) else { return nil }
+            return decoded
+        }
+        bundledKeyboardProfiles = decodedProfiles.reduce(into: [KeyboardProfileV2]()) { result, profile in
+            if !result.contains(where: { $0.profileId == profile.profileId }) { result.append(profile) }
+        }
+    }
+
     private func loadCanonicalEffectsFromDisk() {
         let fileManager = FileManager.default
         var candidates: [URL] = []
@@ -1762,6 +1850,13 @@ final class CommandSurfaceStore: ObservableObject {
 
     private func refreshCodexMicroLabIfConnected() -> Bool {
         guard codexMicroLab.isConnected else { return false }
+        let productName = codexMicroLab.deviceName
+        let labProfileID = CodexMicroLabProtocol.keyboardProfileID(forProductName: productName)
+        if let labProfile = availableKeyboardProfiles.first(where: { $0.profileId == labProfileID }) {
+            // This is the active hardware profile used for writes. The
+            // separate preview selector remains visual-only by design.
+            profile = labProfile
+        }
         isCodexMicroLab = true
         transport = .usb
         deviceSupport = "codex-micro-lab"
@@ -1770,49 +1865,39 @@ final class CommandSurfaceStore: ObservableObject {
         appServerReady = false
         authenticated = false
 
-        let readback = codexMicroLab.readMappingsIfAvailable()
-        var writeError: Error?
-        if readback?.encoderEnabled == false {
-            do {
-                try codexMicroLab.enableEncoder()
-            } catch {
-                writeError = error
-            }
-        }
-
-        var snapshot = CodexMicroLabSnapshot.resolvedForConnection(
-            readback: readback,
-            fallback: codexMicroLabSnapshot
-        )
-        if writeError != nil {
-            snapshot.verification = .pendingReadback
-        }
-        // A failed readback is not evidence that EEPROM is empty. ChatGPT may
-        // already own the HID interface, so never overwrite mappings based on
-        // that ambiguity. Fresh and migrated Lab firmware installs its own v2
-        // defaults; this client only reflects verified readback or cached UI.
-        applyCodexMicroLabSnapshot(snapshot, persist: readback != nil)
-
-        let name = codexMicroLab.deviceName ?? "Codex Micro Lab"
-        if let writeError {
-            publishMessage("已连接 \(name)，但原生映射或旋钮校正待重试：\(writeError.localizedDescription)", severity: .warning)
+        if let snapshot = codexMicroLab.readMappingsIfAvailable() {
+            applyCodexMicroLabSnapshot(snapshot, persist: true)
+            message = "已连接 \(productName ?? "Codex Micro Lab")（\(profile.name)）；\(snapshot.verification.detail)"
         } else {
-            message = "已连接 \(name)；\(snapshot.verification.detail)"
+            // Show the firmware's documented first-boot layout rather than an
+            // empty keyboard when IOKit cannot synchronously fetch Raw HID
+            // input.  Subsequent ARkey edits replace and persist this cache.
+            // The two Lab boards share a USB identity.  Only V1 has a
+            // firmware-defined ready-to-use default; a Q6 readback failure
+            // must stay empty instead of drawing V1's compact-nav mapping.
+            let firmwareDefault: CodexMicroLabSnapshot = labProfileID == "keychron-v1-max-ansi-knob"
+                ? .v1MaxDefaults
+                : .empty
+            var cached = codexMicroLabSnapshot.mappings.isEmpty
+                ? firmwareDefault
+                : codexMicroLabSnapshot
+            cached.verification = .pendingReadback
+            applyCodexMicroLabSnapshot(cached, persist: true)
+            message = "已连接 \(productName ?? "Codex Micro Lab")（\(profile.name)）；\(cached.verification.detail)"
         }
         return true
     }
 
     private func applyCodexMicroLabSnapshot(_ snapshot: CodexMicroLabSnapshot, persist: Bool) {
-        let normalized = CodexMicroLabSnapshot.normalizedForClient(snapshot)
-        codexMicroLabSnapshot = normalized
-        guard persist, let data = try? JSONEncoder().encode(normalized) else { return }
+        codexMicroLabSnapshot = snapshot
+        guard persist, let data = try? JSONEncoder().encode(snapshot) else { return }
         UserDefaults.standard.set(data, forKey: codexMicroLabCacheKey)
     }
 
     private func loadCodexMicroLabCache() {
         guard let data = UserDefaults.standard.data(forKey: codexMicroLabCacheKey),
               let snapshot = try? JSONDecoder().decode(CodexMicroLabSnapshot.self, from: data) else { return }
-        codexMicroLabSnapshot = CodexMicroLabSnapshot.normalizedForClient(snapshot)
+        codexMicroLabSnapshot = snapshot
     }
 
     private func readGitPreview() async -> String {

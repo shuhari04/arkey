@@ -71,7 +71,7 @@ struct OnboardingFlowView: View {
         .background(ArkeyTheme.window)
         .preferredColorScheme(.dark)
         .onChange(of: stepIndex) { oldStep, newStep in
-            if newStep == 5, !store.isCodexMicroLab {
+            if newStep == 5 {
                 store.setQuickBindingEnabled(true)
             } else if oldStep == 5 {
                 store.setQuickBindingEnabled(false)
@@ -237,30 +237,26 @@ struct OnboardingFlowView: View {
     private var bindingStep: some View {
         VStack(alignment: .leading, spacing: 15) {
             callout(
-                title: store.isCodexMicroLab ? "Micro 原生 13 键布局已自动应用" : "默认 15 键布局已自动应用",
-                detail: store.isCodexMicroLab
-                    ? "旋钮永久接管；Skill 与 Cancel 没有原生 Micro 槽位，仅在 App Server 模式提供。"
-                    : "可直接使用，也可选择功能后按实体键重新绑定。",
+                title: "快速绑定建议",
+                detail: "选择功能后按实体键。",
                 color: ArkeyTheme.accent,
                 symbol: "keyboard.badge.ellipsis"
             )
-            if !store.isCodexMicroLab {
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(store.isCapturing ? ArkeyTheme.accent : ArkeyTheme.warning)
-                        .frame(width: 8, height: 8)
-                    Text("当前：\(store.selectedAction?.title ?? "无可绑定功能")")
-                        .font(.callout.monospaced().weight(.semibold))
-                    Spacer()
-                    Button(store.continuousBindingMode ? "停止连续绑定" : "开始连续绑定") {
-                        store.setQuickBindingEnabled(!store.continuousBindingMode)
-                    }
-                    .buttonStyle(ArkeyControlButtonStyle(tone: store.continuousBindingMode ? .selected : .accent))
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(store.isCapturing ? ArkeyTheme.accent : ArkeyTheme.warning)
+                    .frame(width: 8, height: 8)
+                Text("当前：\(store.selectedAction?.title ?? "无可绑定功能")")
+                    .font(.callout.monospaced().weight(.semibold))
+                Spacer()
+                Button(store.continuousBindingMode ? "停止连续绑定" : "开始连续绑定") {
+                    store.setQuickBindingEnabled(!store.continuousBindingMode)
                 }
-                .padding(11)
-                .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+                .buttonStyle(ArkeyControlButtonStyle(tone: store.continuousBindingMode ? .selected : .accent))
             }
-            DisclosureGroup("默认布局（\(defaultBindings.count)）", isExpanded: $recommendedBindingsExpanded) {
+            .padding(11)
+            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+            DisclosureGroup("推荐布局（\(defaultBindings.count)）", isExpanded: $recommendedBindingsExpanded) {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 155), spacing: 8)], spacing: 8) {
                     ForEach(Array(defaultBindings.enumerated()), id: \.offset) { _, item in
                         HStack {
@@ -274,8 +270,8 @@ struct OnboardingFlowView: View {
                 }
                 .padding(.top, 8)
             }
-            .help(store.isCodexMicroLab ? "Micro 原生 13 键布局已自动应用" : "默认 15 键布局已自动应用；也可在主界面拖动任意动作到可绑定控件")
-            .accessibilityHint(store.isCodexMicroLab ? "Micro 原生 13 键布局已自动应用" : "默认 15 键布局已自动应用")
+            .help("推荐布局不会自动应用；也可在主界面拖动任意动作到可绑定控件")
+            .accessibilityHint("推荐布局不会自动应用")
         }
     }
 
@@ -331,40 +327,7 @@ struct OnboardingFlowView: View {
     }
 
     private var defaultBindings: [(String, String)] {
-        if store.isCodexMicroLab {
-            return [
-                ("Numpad 1", "Agent 1"),
-                ("Numpad 2", "Agent 2"),
-                ("Numpad 3", "Agent 3"),
-                ("Numpad 4", "Agent 4"),
-                ("Numpad 5", "Agent 5"),
-                ("Numpad 6", "Agent 6"),
-                ("Numpad +", "Fast · ACT06"),
-                ("F13", "Approve · ACT07"),
-                ("F16", "Decline · ACT08"),
-                ("F14", "Continue · ACT09"),
-                ("Numpad 0", "PTT · ACT10"),
-                ("Numpad Enter", "Send · ACT12"),
-                ("Knob", "Reasoning · permanent")
-            ]
-        }
-        return [
-            ("Numpad 1", "Agent 1"),
-            ("Numpad 2", "Agent 2"),
-            ("Numpad 3", "Agent 3"),
-            ("Numpad 4", "Agent 4"),
-            ("Numpad 5", "Agent 5"),
-            ("Numpad 6", "Agent 6"),
-            ("F13", "Approve"),
-            ("F14", "Continue"),
-            ("F15", "Cancel"),
-            ("F16", "Decline"),
-            ("Numpad /", "Skill"),
-            ("Numpad +", "Fast"),
-            ("Numpad 0", "PTT"),
-            ("Numpad Enter", "Send"),
-            ("Knob", "Reasoning")
-        ]
+        [("F1–F6", "Agent Keys"), ("F7", "Approve"), ("F8", "Decline"), ("F9", "PTT"), ("F10", "Send"), ("F11", "Continue"), ("F12", "Fast"), ("Knob", "Reasoning")]
     }
 
     private func runFirmwarePreflight() {

@@ -133,6 +133,15 @@ final class ArkeyController: ObservableObject {
         }
     }
 
+    func performAgentAction(_ action: AgentControlAction) async {
+        await perform("已向前台 Agent 输入 \(action.title)") {
+            try await AgentControlService.send(action)
+            if self.isReady {
+                _ = try? await ArkeyCommand.run(["preview", action.previewEffect.rawValue, "900"])
+            }
+        }
+    }
+
     private func perform(_ success: String, operation: () async throws -> Void) async {
         isBusy = true
         defer { isBusy = false }
@@ -181,7 +190,7 @@ enum ArkeyCommandError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .missingCLI: "找不到 arkey CLI 或 Node.js，请先运行 npm install -g ."
+        case .missingCLI: "ARkey 内置运行时不可用。请从最新版 ARkey V1 Max 安装包重新安装应用；无需运行 npm install。"
         case .failed(let output): output.isEmpty ? "ARkey 命令执行失败" : output
         }
     }
@@ -196,7 +205,7 @@ enum ArkeyCommand {
             process.executableURL = URL(fileURLWithPath: command.executable)
             process.arguments = command.arguments
             process.environment = [
-                "PATH": "/opt/homebrew/opt/node@24/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/opt/node@20/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                "PATH": "/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                 "HOME": NSHomeDirectory()
             ]
             process.standardOutput = output
@@ -222,13 +231,15 @@ enum ArkeyCommand {
     static func resolveCommand(_ arguments: [String]) throws -> (executable: String, arguments: [String]) {
         let fileManager = FileManager.default
         let home = NSHomeDirectory()
+        let bundledNode: String? = Bundle.main.resourceURL.map {
+            $0.appendingPathComponent("ArkeyRuntime/node/bin/node").path(percentEncoded: false)
+        }
         let nodeCandidates = [
-            "/opt/homebrew/opt/node@24/bin/node",
+            bundledNode,
             "/opt/homebrew/opt/node@22/bin/node",
-            "/opt/homebrew/opt/node@20/bin/node",
             "/opt/homebrew/bin/node",
             "/usr/local/bin/node"
-        ]
+        ].compactMap { $0 }
         let bundledCLI: String? = Bundle.main.resourceURL.map {
             $0.appendingPathComponent("ArkeyRuntime/dist/src/cli.js").path(percentEncoded: false)
         }
@@ -271,7 +282,7 @@ final class ArkeyEventObserver: @unchecked Sendable {
         process.executableURL = URL(fileURLWithPath: command.executable)
         process.arguments = command.arguments
         process.environment = [
-            "PATH": "/opt/homebrew/opt/node@24/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/opt/node@20/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": "/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": NSHomeDirectory()
         ]
         process.standardOutput = output

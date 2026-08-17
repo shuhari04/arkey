@@ -1,0 +1,40 @@
+diff --git a/keyboards/keychron/v1_max/v1_max.c b/keyboards/keychron/v1_max/v1_max.c
+index 9964a6800..a7ef0dd32 100644
+--- a/keyboards/keychron/v1_max/v1_max.c
++++ b/keyboards/keychron/v1_max/v1_max.c
+@@ -14,6 +14,7 @@
+  */
+
+ #include "keychron.h"
++#include "arkey.h"
+
+ #define POWER_ON_LED_DURATION 3000
+ static uint32_t power_on_indicator_timer_buffer;
+@@ -39,6 +40,8 @@ void keyboard_post_init_kb(void) {
+ }
+
+ void keychron_task_kb(void) {
++    arkey_task();
++
+     if (power_on_indicator_timer_buffer) {
+         if (timer_elapsed32(power_on_indicator_timer_buffer) > POWER_ON_LED_DURATION) {
+             power_on_indicator_timer_buffer = 0;
+@@ -60,2 +63,7 @@ bool lpm_is_kb_idle(void) {
+ }
+ #endif
++
++bool process_record_keychron_kb(uint16_t keycode, keyrecord_t *record) {
++    if (!arkey_process_record(keycode, record)) return false;
++    return true;
++}
+diff --git a/keyboards/keychron/v1_max/rules.mk b/keyboards/keychron/v1_max/rules.mk
+index d3806ddb6..05d5f26c2 100644
+--- a/keyboards/keychron/v1_max/rules.mk
++++ b/keyboards/keychron/v1_max/rules.mk
+@@ -1,3 +1,6 @@
++RGB_MATRIX_CUSTOM_USER = yes
++SRC += arkey.c
++
+ KEYCHRON_RGB_ENABLE = yes
+
+ include keyboards/keychron/common/wireless/wireless.mk

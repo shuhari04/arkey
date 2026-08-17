@@ -28,6 +28,7 @@
 #define CM_CONFIG_CLEAR 0x05
 #define CM_CONFIG_ENCODER 0x06
 #define CM_CONFIG_RESET 0x07
+#define CM_CONFIG_ENTER_DFU 0x08
 #define CM_CONFIG_CAPTURED 0x13
 #define CM_CONFIG_ACK 0x7F
 
@@ -47,10 +48,18 @@
 #define CM_MAPPING_UNASSIGNED 0xFF
 #define CM_CONFIG_MAGIC_0 0x43
 #define CM_CONFIG_MAGIC_1 0x4D
-#define CM_CONFIG_STORAGE_VERSION 2
+#define CM_CONFIG_STORAGE_VERSION 3
 #define CM_JSON_BUFFER_SIZE 1536
 #define CM_EVENT_QUEUE_SIZE 16
 #define CM_CAPTURE_TIMEOUT_MS 30000
+
+#if defined(CODEX_MICRO_V1_MAX)
+#    define CM_LAB_BUILD_VERSION "0.1.9-v1max"
+#elif defined(CODEX_MICRO_Q6_PRO)
+#    define CM_LAB_BUILD_VERSION "0.1.5-q6pro"
+#else
+#    define CM_LAB_BUILD_VERSION "0.1.0-unknown-board"
+#endif
 
 #define CM_EFFECT_OFF 0
 #define CM_EFFECT_SOLID 1
@@ -133,6 +142,9 @@ static uint32_t capture_started_at;
 static bool capture_release_suppressed;
 static uint8_t capture_row;
 static uint8_t capture_col;
+/* Reset only after the configuration ACK has left the USB endpoint. */
+static bool dfu_pending;
+static uint32_t dfu_pending_at;
 
 /*
  * Native Micro target order:
@@ -144,6 +156,29 @@ static uint8_t capture_col;
  * Encoder rotation is intentionally not part of this table. It is permanently
  * claimed by codex_micro_lab_encoder_preprocess() while the keyboard uses USB.
  */
+#if defined(CODEX_MICRO_V1_MAX)
+/* V1 Max has a dedicated navigation column, so Lab comes up usable before a
+ * host writes any custom mappings: PgUp=Agent 1, PgDn=Agent 2, Home=PTT. */
+static const cm_mapping_t v1_default_mappings[CM_TARGET_COUNT] = {
+    [0] = {1, 15},
+    [1] = {2, 15},
+    [10] = {3, 15},
+    [12] = {0, 15},
+    [2] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [3] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [4] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [5] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [6] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [7] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [8] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [9] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [11] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [13] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [14] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [15] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [16] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+};
+#else
 static const cm_mapping_t default_mappings[CM_TARGET_COUNT] = {
     [0] = {4, 17},
     [1] = {4, 18},
@@ -163,6 +198,7 @@ static const cm_mapping_t default_mappings[CM_TARGET_COUNT] = {
     [15] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
     [16] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
 };
+#endif
 
 static uint8_t config_checksum(const cm_persisted_config_t *value) {
     const uint8_t *bytes = (const uint8_t *)value;
@@ -177,27 +213,42 @@ static void config_defaults(void) {
     config.magic_1 = CM_CONFIG_MAGIC_1;
     config.version = CM_CONFIG_STORAGE_VERSION;
     config.encoder_enabled = 1;
+#if defined(CODEX_MICRO_V1_MAX)
+    memcpy(config.mappings, v1_default_mappings, sizeof(config.mappings));
+#else
     memcpy(config.mappings, default_mappings, sizeof(config.mappings));
+#endif
     config.checksum = config_checksum(&config);
 }
 
 static void save_config(void) {
     config.checksum = config_checksum(&config);
+#ifdef CODEX_MICRO_EECONFIG_OFFSET_API
+    eeconfig_update_user_datablock(&config, 0, sizeof(config));
+#else
     eeconfig_update_user_datablock(&config);
+#endif
 }
 
 static void ensure_config(void) {
     if (config_loaded) return;
+#ifdef CODEX_MICRO_EECONFIG_OFFSET_API
+    eeconfig_read_user_datablock(&config, 0, sizeof(config));
+#else
     eeconfig_read_user_datablock(&config);
+#endif
     if (config.magic_0 != CM_CONFIG_MAGIC_0 || config.magic_1 != CM_CONFIG_MAGIC_1 ||
         config.version != CM_CONFIG_STORAGE_VERSION || config.checksum != config_checksum(&config)) {
         config_defaults();
         save_config();
-    } else if (config.encoder_enabled != 1) {
+    }
+#if defined(CODEX_MICRO_Q6_PRO)
+    else if (config.encoder_enabled != 1) {
         /* Old or externally modified data may never disable Micro rotation. */
         config.encoder_enabled = 1;
         save_config();
     }
+#endif
     config_loaded = true;
 }
 
@@ -427,14 +478,14 @@ static void handle_json_request(char *json) {
     char response[192];
     desktop_connected = true;
     if (strstr(json, "\"method\":\"sys.version\"") != NULL) {
-        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"0.1.5-arkey-lab\"}}", id);
+        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"%s\"}}", id, CM_LAB_BUILD_VERSION);
     } else if (strstr(json, "\"method\":\"device.status\"") != NULL) {
 #ifdef KC_BLUETOOTH_ENABLE
         uint8_t battery = battery_get_percentage();
 #else
         uint8_t battery = 100;
 #endif
-        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"0.1.5-arkey-lab\",\"profile_index\":0,\"layer_index\":0,\"battery\":%u,\"is_charging\":true}}", id, battery);
+        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"%s\",\"profile_index\":0,\"layer_index\":0,\"battery\":%u,\"is_charging\":true}}", id, CM_LAB_BUILD_VERSION, battery);
     } else if (strstr(json, "\"method\":\"v.oai.thstatus\"") != NULL) {
         parse_threads_lighting(json);
         snprintf(response, sizeof(response), "{\"id\":%d,\"result\":true}", id);
@@ -549,13 +600,18 @@ static bool handle_config_report(const uint8_t *data, uint8_t length) {
         case CM_CONFIG_ENCODER:
             if (payload_length != 1) send_config_ack(sequence, opcode, CM_STATUS_BAD_LENGTH);
             else {
-                /* The compatibility surface owns the encoder on USB. A legacy
-                 * "disable" request is acknowledged but deliberately ignored. */
+#if defined(CODEX_MICRO_Q6_PRO)
+                /* Q6 Pro's Lab surface owns rotation on USB. A legacy disable
+                 * request is acknowledged but deliberately ignored. */
                 (void)payload;
                 if (config.encoder_enabled != 1) {
                     config.encoder_enabled = 1;
                     save_config();
                 }
+#else
+                config.encoder_enabled = payload[0] != 0;
+                save_config();
+#endif
                 send_config_ack(sequence, opcode, CM_STATUS_OK);
             }
             break;
@@ -563,6 +619,17 @@ static bool handle_config_report(const uint8_t *data, uint8_t length) {
             config_defaults();
             save_config();
             send_config_ack(sequence, opcode, CM_STATUS_OK);
+            break;
+        case CM_CONFIG_ENTER_DFU:
+            /* This is intentionally not a generic reset command. It requires
+             * an exact local confirmation token and sends its ACK first. */
+            if (payload_length != 4 || payload[0] != 'D' || payload[1] != 'F' || payload[2] != 'U' || payload[3] != '!') {
+                send_config_ack(sequence, opcode, CM_STATUS_BAD_LENGTH);
+            } else {
+                send_config_ack(sequence, opcode, CM_STATUS_OK);
+                dfu_pending = true;
+                dfu_pending_at = timer_read32();
+            }
             break;
         default:
             send_config_ack(sequence, opcode, CM_STATUS_BAD_TARGET);
@@ -572,7 +639,21 @@ static bool handle_config_report(const uint8_t *data, uint8_t length) {
 }
 
 bool codex_micro_lab_command(uint8_t *data, uint8_t length) {
-    if (!using_usb()) return false;
+    /* V1 Max's ChibiOS endpoint may pass report-id-stripped payloads. Normalize
+     * canonical 07+A7 and the observed A7 / 00+A7 / 00+07+A7 body forms. */
+    uint8_t framed[CM_REPORT_SIZE] = {0};
+    if (!(length == CM_REPORT_SIZE && data[0] == CM_CONFIG_REPORT_ID)) {
+        uint8_t magic_offset = 0;
+        while (magic_offset < length && magic_offset < 4 && data[magic_offset] != CM_CONFIG_MAGIC) magic_offset++;
+        if (magic_offset < length && magic_offset < 4) {
+            uint8_t body_length = length - magic_offset;
+            if (body_length > CM_REPORT_SIZE - 1) body_length = CM_REPORT_SIZE - 1;
+            framed[0] = CM_CONFIG_REPORT_ID;
+            memcpy(&framed[1], &data[magic_offset], body_length);
+            data = framed;
+            length = CM_REPORT_SIZE;
+        }
+    }
     if (handle_codex_report(data, length)) return true;
     if (handle_config_report(data, length)) return true;
     return false;
@@ -633,17 +714,22 @@ bool codex_micro_lab_process_record(uint16_t keycode, keyrecord_t *record) {
 
 bool codex_micro_lab_encoder_preprocess(uint8_t index, bool clockwise) {
     ensure_config();
-    if (!using_usb()) return true;
+    if (!using_usb() || !config.encoder_enabled) return true;
 
     // Claim the turn before ENCODER_MAP emits KC_VOLD/KC_VOLU. Q6 Pro's
-    // encoder orientation is opposite to the Codex Micro protocol direction,
-    // so normalize it here before task() emits ENC_CW or ENC_CC.
+    // encoder orientation is opposite to the Codex Micro protocol direction;
+    // V1 Max follows the same normalized event naming at this protocol layer.
     enqueue_event(CM_EVENT_HID, CM_TARGET_ENCODER_PRESS, 2, clockwise ? 1 : 0, index);
     return false;
 }
 
 void codex_micro_lab_task(void) {
     ensure_config();
+    /* `reset_keyboard()` writes QMK's STM32 DFU marker then resets. The delay
+     * lets macOS receive the configuration ACK before the USB disconnect. */
+    if (dfu_pending && timer_elapsed32(dfu_pending_at) >= 350) {
+        reset_keyboard();
+    }
     if (!using_usb()) {
         desktop_connected = false;
         json_length = 0;

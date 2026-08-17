@@ -22,7 +22,7 @@ import {
   type ControlEvent,
   type EffectSpec,
 } from "./protocol.js";
-import { controlForMatrix, mapText, profileDirectory, profileDocument, q6ProAnsi } from "./profile.js";
+import { controlForMatrix, mapText, profileDirectory, profileDocument, q6ProAnsi, type KeyboardProfile } from "./profile.js";
 import { effectCatalog, semanticEffect } from "./effects.js";
 import { KeyboardTransport } from "./transport.js";
 import {
@@ -81,9 +81,16 @@ export const defaultQ6Bindings: readonly DefaultQ6Binding[] = [
   { controlId: "encoder-0", instanceId: "dialReasoning", actionId: "reasoning" },
 ] as const;
 
+export const defaultV1MaxBindings: readonly DefaultQ6Binding[] = [
+  { controlId: "r1c15", instanceId: "task-agent-1", actionId: "task_agent", taskSlotIndex: 0 },
+  { controlId: "r2c15", instanceId: "task-agent-2", actionId: "task_agent", taskSlotIndex: 1 },
+  { controlId: "r3c15", instanceId: "pushToTalk", actionId: "ptt" },
+  { controlId: "encoder-0", instanceId: "dialReasoning", actionId: "reasoning" },
+] as const;
+
 export type LegacyRuntimeMessage =
-  | { type: "event"; source: "codex" | "manual"; state: AgentState }
-  | { type: "text"; source: "codex" | "manual"; text: string }
+  | { type: "event"; source: "codex" | "claude" | "manual"; state: AgentState }
+  | { type: "text"; source: "codex" | "claude" | "manual"; text: string }
   | { type: "preview"; state: AgentState; durationMs?: number }
   | { type: "test" }
   | { type: "restore" }
@@ -248,11 +255,11 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     rmSync(this.daemonSocketPath, { force: true });
     writeFileSync(this.daemonPidPath, String(process.pid), { mode: 0o600 });
-    this.ensureDefaultBindings();
+    const connection = this.ensureConnected();
+    this.ensureDefaultBindings(connection?.profile ?? q6ProAnsi);
     this.stores.settings.write(this.settings);
     this.stores.bindings.write(this.bindingState);
     this.persistTasks();
-    this.ensureConnected();
     this.heartbeat = setInterval(() => {
       if (!this.transport.send(Opcode.Heartbeat)) this.ensureConnected();
     }, 1000);
@@ -436,7 +443,7 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
     switch (method) {
       case "profile.get":
         return {
-          profile: profileDocument(q6ProAnsi),
+          profile: profileDocument(this.activeProfile()),
           connection: this.transport.connection ? {
             product: this.transport.connection.product,
             support: this.transport.connection.support,
@@ -535,6 +542,7 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
 
   private status(): RuntimeStatus {
     const connection = this.ensureConnected();
+    const profile = connection?.profile ?? this.activeProfile();
     const account = this.appServer.account;
     const authenticated = this.appServerState === "ready" && this.isAccountAuthenticated(account);
     return {
@@ -544,8 +552,8 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
       extensionVersion: connection?.extensionVersion,
       layoutMatches: connection?.layoutMatches,
       fullControl: connection?.fullControl,
-      profileId: q6ProAnsi.profileId,
-      layoutHash: q6ProAnsi.layoutHash,
+      profileId: profile.profileId,
+      layoutHash: profile.layoutHash,
       state: this.state,
       selectedTaskId: this.taskState.selectedTaskId,
       appServer: this.appServerState,
@@ -572,16 +580,18 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
   }
 
   private firmwarePreflight(): Record<string, unknown> {
-    const binaryPath = join(profileDirectory, "..", "build", "arkey-q6-pro-ansi-v0.1.0.bin");
+    const profile = this.activeProfile();
+    const isV1Max = profile.profileId === "keychron-v1-max-ansi-knob";
+    const binaryPath = join(profileDirectory, "..", "build", isV1Max ? "arkey-v1-max-ansi-knob-v0.1.0.bin" : "arkey-q6-pro-ansi-v0.1.0.bin");
     const binaryExists = existsSync(binaryPath);
     const binary = binaryExists ? readFileSync(binaryPath) : undefined;
     return {
       dryRun: true,
       flashed: false,
-      target: "keychron/q6_pro/ansi_encoder",
-      pinnedQmkCommit: "618127a725a1773e85f13455602cf6f72ab4de17",
-      profileId: q6ProAnsi.profileId,
-      layoutHash: q6ProAnsi.layoutHash,
+      target: isV1Max ? "keychron/v1_max/ansi_encoder" : "keychron/q6_pro/ansi_encoder",
+      pinnedQmkCommit: isV1Max ? "bc1bdeb85f39cccd5e503f4d8f472078a8c1472a" : "618127a725a1773e85f13455602cf6f72ab4de17",
+      profileId: profile.profileId,
+      layoutHash: profile.layoutHash,
       connection: this.transport.connection ? {
         product: this.transport.connection.product,
         extensionVersion: this.transport.connection.extensionVersion,
@@ -723,7 +733,7 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
     this.voiceWavePosition = 0;
     if (this.voiceState !== "recording" && this.voiceState !== "processing") return;
 
-    const controls = q6ProAnsi.controls.filter((control) => control.ledIndex !== null);
+    const controls = this.activeProfile().controls.filter((control) => control.ledIndex !== null);
     const maximumX = controls.reduce((maximum, control) => Math.max(maximum, control.frame.x + control.frame.width / 2), 0);
     const steps = Math.max(1, Math.ceil(maximumX * 2) + 1);
     const tick = () => {
@@ -762,11 +772,12 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
   }
 
   private async setBinding(params: Record<string, unknown>): Promise<unknown> {
-    const controlId = canonicalBindingControlId(String(params.controlId ?? ""));
+    const profile = this.activeProfile();
+    const controlId = this.canonicalBindingControlId(String(params.controlId ?? ""), profile);
     const actionId = String(params.actionId ?? "");
     const instanceId = String(params.instanceId ?? randomUUID());
-    const control = q6ProAnsi.controls.find((candidate) => candidate.id === controlId) ??
-      (q6ProAnsi.encoder.id === controlId ? q6ProAnsi.encoder : undefined);
+    const control = profile.controls.find((candidate) => candidate.id === controlId) ??
+      (profile.encoder.id === controlId ? profile.encoder : undefined);
     if (!control || !control.bindable) throw new Error(`Control ${controlId} is not bindable`);
     const action = this.actions.find((candidate) => candidate.actionId === actionId);
     if (!action) throw new Error(`Unknown action ${actionId}`);
@@ -774,7 +785,9 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
     const taskId = typeof params.taskId === "string" ? params.taskId : undefined;
     if (actionId === "task_agent" && !taskId) throw new Error("task_agent binding requires a daemon taskId from task.create");
     if (taskId && !this.taskState.tasks.some((task) => task.taskId === taskId)) throw new Error(`Unknown Arkey task ${taskId}`);
-    const existing = this.bindingState.bindings.find((binding) => canonicalBindingControlId(binding.controlId) === controlId);
+    const existing = this.bindingState.bindings.find((binding) =>
+      binding.profileId === profile.profileId && this.canonicalBindingControlId(binding.controlId, profile) === controlId
+    );
     if (existing && params.replace !== true) throw new Error(`Control ${controlId} is already bound`);
     const now = this.now().toISOString();
     const binding: Binding = {
@@ -782,17 +795,19 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
       instanceId,
       actionId,
       taskId,
-      profileId: q6ProAnsi.profileId,
-      layoutHash: q6ProAnsi.layoutHash,
+      profileId: profile.profileId,
+      layoutHash: profile.layoutHash,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
     const previous = this.bindingState;
-    if (controlId === q6ProAnsi.encoder.id) this.clearReasoningPress("binding-changed");
+    if (controlId === profile.encoder.id) this.clearReasoningPress("binding-changed");
     const next: StoredBindings = {
       version: 1,
       revision: (previous.revision + 1) & 0xffff,
-      bindings: [...previous.bindings.filter((candidate) => canonicalBindingControlId(candidate.controlId) !== controlId), binding],
+      bindings: [...previous.bindings.filter((candidate) =>
+        candidate.profileId !== profile.profileId || this.canonicalBindingControlId(candidate.controlId, profile) !== controlId
+      ), binding],
     };
     this.invalidateHardwareBindingAcknowledgement("binding-revision-changed");
     this.bindingState = next;
@@ -816,15 +831,18 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
   }
 
   private async removeBinding(controlId: string): Promise<unknown> {
-    controlId = canonicalBindingControlId(controlId);
+    const profile = this.activeProfile();
+    controlId = this.canonicalBindingControlId(controlId, profile);
     if (!controlId) throw new Error("binding.remove requires controlId");
     const previous = this.bindingState;
-    if (!previous.bindings.some((binding) => canonicalBindingControlId(binding.controlId) === controlId)) return { removed: false };
-    if (controlId === q6ProAnsi.encoder.id) this.clearReasoningPress("binding-removed");
+    if (!previous.bindings.some((binding) => binding.profileId === profile.profileId && this.canonicalBindingControlId(binding.controlId, profile) === controlId)) return { removed: false };
+    if (controlId === profile.encoder.id) this.clearReasoningPress("binding-removed");
     const next: StoredBindings = {
       version: 1,
       revision: (previous.revision + 1) & 0xffff,
-      bindings: previous.bindings.filter((binding) => canonicalBindingControlId(binding.controlId) !== controlId),
+      bindings: previous.bindings.filter((binding) =>
+        binding.profileId !== profile.profileId || this.canonicalBindingControlId(binding.controlId, profile) !== controlId
+      ),
     };
     this.invalidateHardwareBindingAcknowledgement("binding-revision-changed");
     this.bindingState = next;
@@ -843,17 +861,20 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
 
   private syncBindingMask(waitForAck: boolean): Promise<boolean> {
     if (!this.transport.connection?.fullControl) return Promise.resolve(false);
+    const profile = this.activeProfile();
     const positions = this.bindingState.bindings.filter((binding) => this.isBindingCurrent(binding)).flatMap((binding) => {
-      const bindingControlId = canonicalBindingControlId(binding.controlId);
-      const controlId = bindingControlId === q6ProAnsi.encoder.id ? q6ProAnsi.encoder.pressControlId : bindingControlId;
-      const control = q6ProAnsi.controls.find((candidate) => candidate.id === controlId);
+      const bindingControlId = this.canonicalBindingControlId(binding.controlId, profile);
+      const controlId = bindingControlId === profile.encoder.id ? profile.encoder.pressControlId : bindingControlId;
+      const control = profile.controls.find((candidate) => candidate.id === controlId);
       return control ? [control.matrix] : [];
     });
-    // Two bits per encoder: CW then CCW. A bound Q6 knob must capture both.
-    const encoderMask = this.bindingState.bindings.some((binding) => this.isBindingCurrent(binding) && canonicalBindingControlId(binding.controlId) === q6ProAnsi.encoder.id) ? 0x03 : 0;
+    // Two bits per encoder: CW then CCW. A bound knob must capture both.
+    const encoderMask = this.bindingState.bindings.some((binding) =>
+      this.isBindingCurrent(binding) && this.canonicalBindingControlId(binding.controlId, profile) === profile.encoder.id
+    ) ? 0x03 : 0;
     const payload = encodeBindingMask({
       revision: this.bindingState.revision,
-      matrixBits: matrixBindingBits(positions, q6ProAnsi.matrix.columns),
+      matrixBits: matrixBindingBits(positions, profile.matrix.columns),
       encoderMask,
       flags: 0,
     });
@@ -927,13 +948,14 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
   }
 
   private handleControlEvent(event: ControlEvent): void {
+    const profile = this.activeProfile();
     const matrixControlId = event.kind === ControlEventKind.Key
-      ? controlForMatrix(q6ProAnsi, event.row, event.column)?.id
+      ? controlForMatrix(profile, event.row, event.column)?.id
       : undefined;
-    const encoderPress = matrixControlId === q6ProAnsi.encoder.pressControlId;
+    const encoderPress = matrixControlId === profile.encoder.pressControlId;
     const controlId = event.kind === ControlEventKind.Key
-      ? encoderPress ? q6ProAnsi.encoder.id : matrixControlId
-      : q6ProAnsi.encoder.id;
+      ? encoderPress ? profile.encoder.id : matrixControlId
+      : profile.encoder.id;
     if (!controlId) return;
     const isCaptureEvent = (event.flags & 0x01) !== 0;
     const capturedPress = this.capturedPress;
@@ -966,7 +988,7 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
       return;
     }
     const binding = this.bindingState.bindings.find((candidate) =>
-      this.isBindingCurrent(candidate) && canonicalBindingControlId(candidate.controlId) === controlId
+      this.isBindingCurrent(candidate) && this.canonicalBindingControlId(candidate.controlId, profile) === controlId
     );
     if (!binding) return;
     if (binding.actionId === "reasoning" && encoderPress) {
@@ -1036,7 +1058,7 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
       this.broadcast("reasoning.press", {
         phase: "press",
         taskId,
-        controlId: q6ProAnsi.encoder.id,
+        controlId: this.activeProfile().encoder.id,
         deviceTick: event.deviceTick,
         thresholdMs: 500,
       });
@@ -1060,7 +1082,7 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
     this.broadcast("reasoning.press", {
       phase: "release",
       taskId: session.taskId,
-      controlId: q6ProAnsi.encoder.id,
+      controlId: this.activeProfile().encoder.id,
       deviceTick: event.deviceTick,
       durationMs,
       longPress: session.longPressFired,
@@ -1074,7 +1096,7 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
     this.broadcast("app.foreground.requested", {
       taskId: session.taskId,
       instanceId: session.binding.instanceId,
-      controlId: q6ProAnsi.encoder.id,
+      controlId: this.activeProfile().encoder.id,
       reason: "reasoning-long-press",
       durationMs,
     });
@@ -1088,7 +1110,7 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
     this.broadcast("reasoning.press", {
       phase: "cancelled",
       taskId: session.taskId,
-      controlId: q6ProAnsi.encoder.id,
+      controlId: this.activeProfile().encoder.id,
       reason,
     });
   }
@@ -1115,13 +1137,18 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
     }
   }
 
-  private ensureDefaultBindings(): void {
+  private activeProfile(): KeyboardProfile {
+    return this.transport.connection?.profile ?? q6ProAnsi;
+  }
+
+  private ensureDefaultBindings(profile: KeyboardProfile): void {
     // Revision zero is the untouched state written by the first public build.
     // A user-cleared layout has a later revision and must remain empty.
     if (this.bindingState.revision !== 0 || this.bindingState.bindings.length !== 0) return;
     const tasksBySlot = new Map(this.taskState.tasks.map((task) => [task.slotIndex, task]));
     const timestamp = this.now().toISOString();
-    const bindings = defaultQ6Bindings.flatMap((template): Binding[] => {
+    const templates = profile.profileId === "keychron-v1-max-ansi-knob" ? defaultV1MaxBindings : defaultQ6Bindings;
+    const bindings = templates.flatMap((template): Binding[] => {
       const taskId = template.taskSlotIndex === undefined
         ? undefined
         : tasksBySlot.get(template.taskSlotIndex)?.taskId;
@@ -1131,8 +1158,8 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
         instanceId: template.instanceId,
         actionId: template.actionId,
         taskId,
-        profileId: q6ProAnsi.profileId,
-        layoutHash: q6ProAnsi.layoutHash,
+        profileId: profile.profileId,
+        layoutHash: profile.layoutHash,
         createdAt: timestamp,
         updatedAt: timestamp,
       }];
@@ -1697,17 +1724,18 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
   }
 
   private bindingTransientTargetControlId(controlId: string): string {
-    const direct = q6ProAnsi.controls.find((control) => control.id === controlId && control.ledIndex !== null);
+    const profile = this.activeProfile();
+    const direct = profile.controls.find((control) => control.id === controlId && control.ledIndex !== null);
     if (direct) return direct.id;
     const selectedTaskId = this.taskState.selectedTaskId;
     const selectedTaskKey = this.bindingState.bindings.find((binding) => {
       if (!this.isBindingCurrent(binding) || binding.actionId !== "task_agent" || binding.taskId !== selectedTaskId) return false;
-      return q6ProAnsi.controls.some((control) => control.id === binding.controlId && control.ledIndex !== null);
+      return profile.controls.some((control) => control.id === binding.controlId && control.ledIndex !== null);
     });
     if (selectedTaskKey) return selectedTaskKey.controlId;
-    const encoderCenterX = q6ProAnsi.encoder.frame.x + q6ProAnsi.encoder.frame.width / 2;
-    const encoderCenterY = q6ProAnsi.encoder.frame.y + q6ProAnsi.encoder.frame.height / 2;
-    return q6ProAnsi.controls
+    const encoderCenterX = profile.encoder.frame.x + profile.encoder.frame.width / 2;
+    const encoderCenterY = profile.encoder.frame.y + profile.encoder.frame.height / 2;
+    return profile.controls
       .filter((control) => control.ledIndex !== null)
       .map((control) => ({
         control,
@@ -1716,7 +1744,7 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
           control.frame.y + control.frame.height / 2 - encoderCenterY,
         ),
       }))
-      .sort((left, right) => left.distance - right.distance)[0]?.control.id ?? q6ProAnsi.controls[0].id;
+      .sort((left, right) => left.distance - right.distance)[0]?.control.id ?? profile.controls[0].id;
   }
 
   private renderTaskAtmosphere(): void {
@@ -1735,12 +1763,13 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
 
   private renderOverlays(): void {
     if (!this.transport.connection?.fullControl || !this.settings.hardwareSync || this.lightingTimer) return;
+    const profile = this.activeProfile();
     const effects: EffectSpec[] = [];
     const renderedTransients = new Set<string>();
     const selected = this.taskState.selectedTaskId;
     for (const binding of this.bindingState.bindings) {
       if (!this.isBindingCurrent(binding)) continue;
-      const control = q6ProAnsi.controls.find((candidate) => candidate.id === binding.controlId);
+      const control = profile.controls.find((candidate) => candidate.id === binding.controlId);
       if (!control || control.ledIndex === null) continue;
       const bindingTransient = this.controlTransients.get(binding.controlId);
       if (bindingTransient) {
@@ -1770,7 +1799,7 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
     }
     for (const [controlId, transient] of this.controlTransients) {
       if (renderedTransients.has(controlId)) continue;
-      const control = q6ProAnsi.controls.find((candidate) => candidate.id === controlId);
+      const control = profile.controls.find((candidate) => candidate.id === controlId);
       if (control?.ledIndex !== null && control?.ledIndex !== undefined) effects.push({ ...transient.effect, led: control.ledIndex });
     }
     this.sendEffects(effects, this.settings.atmosphereMix);
@@ -1792,9 +1821,10 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
     const epoch = Math.round(numberParam(params.epoch, (this.overlayEpoch + 1) & 0xffff)) & 0xffff;
     const seed = Math.round(numberParam(params.seed, Math.floor(Math.random() * 0x1_0000_0000))) >>> 0;
     const rawEffects = Array.isArray(params.effects) ? params.effects : [];
-    const effects = rawEffects.map((effect, index) => parseEffectSpec(effect, (seed + index * 53) & 0xff));
+    const profile = this.activeProfile();
+    const effects = rawEffects.map((effect, index) => parseEffectSpec(effect, (seed + index * 53) & 0xff, profile.ledCount));
     if (!effects.length && typeof params.controlId === "string") {
-      const control = q6ProAnsi.controls.find((candidate) => candidate.id === params.controlId);
+      const control = profile.controls.find((candidate) => candidate.id === params.controlId);
       if (control?.ledIndex !== null && control?.ledIndex !== undefined) {
         effects.push(effectForTaskState(control.ledIndex, String(params.state ?? "working") as TaskLightState, true));
       }
@@ -1850,7 +1880,12 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
   }
 
   private isBindingCurrent(binding: Binding): boolean {
-    return binding.profileId === q6ProAnsi.profileId && binding.layoutHash === q6ProAnsi.layoutHash;
+    const profile = this.activeProfile();
+    return binding.profileId === profile.profileId && binding.layoutHash === profile.layoutHash;
+  }
+
+  private canonicalBindingControlId(controlId: string, profile = this.activeProfile()): string {
+    return controlId === profile.encoder.pressControlId ? profile.encoder.id : controlId;
   }
 
   private hardwareBindingsActive(): boolean {
@@ -2035,20 +2070,16 @@ export class ArkeyDaemon extends EventEmitter<{ runtime: [RuntimeEvent] }> {
   }
 }
 
-function canonicalBindingControlId(controlId: string): string {
-  return controlId === q6ProAnsi.encoder.pressControlId ? q6ProAnsi.encoder.id : controlId;
-}
-
 export function effectForTaskState(led: number, state: TaskLightState, selected: boolean): EffectSpec {
   return semanticEffect(led, state, selected);
 }
 
-function parseEffectSpec(value: unknown, defaultPhase = 0): EffectSpec {
+function parseEffectSpec(value: unknown, defaultPhase = 0, ledCount = q6ProAnsi.ledCount): EffectSpec {
   const object = asObject(value);
   const effect = numberParam(object.effect, EffectPrimitive.Solid);
   if (effect < EffectPrimitive.Off || effect > EffectPrimitive.PressFlash) throw new Error("Unknown effect primitive");
   const led = numberParam(object.led, -1);
-  if (!Number.isInteger(led) || led < 0 || led >= q6ProAnsi.ledCount) throw new Error("Effect LED is outside the active profile");
+  if (!Number.isInteger(led) || led < 0 || led >= ledCount) throw new Error("Effect LED is outside the active profile");
   return {
     led,
     effect,
