@@ -132,13 +132,13 @@ QMK_HOME="$PWD/qmk_firmware" \
 当前产物：
 
 ```text
-build/arkey-q6-pro-codex-micro-lab-v0.1.4.bin
+build/arkey-q6-pro-codex-micro-lab-v0.1.5.bin
 ```
 
 脚本验证目标、MCU、bootloader、原 Keychron VID/PID 和固定 QMK commit；拒绝修改脏的上游文件，并在成功、失败或中断后恢复所有临时 patch。它不会运行 `qmk flash`、进入 DFU 或调用 `dfu-util -D`。
 
 ```bash
-shasum -a 256 build/arkey-q6-pro-codex-micro-lab-v0.1.4.bin
+shasum -a 256 build/arkey-q6-pro-codex-micro-lab-v0.1.5.bin
 git -C qmk_firmware status --short
 ```
 
@@ -191,6 +191,23 @@ node scripts/codex-micro-lab-config.mjs encoder on
 当前 Desktop 默认把 `ACT10` 用作 native PTT，因此工具提供 `ptt` 和 `voice-ptt` 别名，二者都只解析到 `command-5`。实际行为以当前 ChatGPT Desktop 的 Codex Micro 设置为准；如果用户修改了 ACT10 动作，Arkey 不能继续宣称它仍是 PTT。
 
 native PTT 的麦克风、音频和转写由 ChatGPT Desktop 处理，不经过 Arkey 的 App Server daemon 或本地 `SpeechCoordinator`。任务灯光和 keys/ambient 光效由 report `0x06` 投射到当前映射的 LED；Q6 没有官方设备相同的灯光几何，因此 ambient 只能作为全键盘背景近似。
+
+Lab `0.1.5` 直接使用 Desktop 下发的 packed RGB、brightness、effect 和 speed，不经过 App Server 模式的 `profiles/effects-v1.json`，也不再对 ambient 额外降亮。当前验证基线 `26.715.61943` 的日常状态语义如下：
+
+| 状态 | 颜色 | Agent 键 |
+| --- | --- | --- |
+| Working | `#304FFE` | 普通槽 solid；selected/pulsing 槽 breath，speed `0.4` |
+| Unread | `#00FF4C` | 普通槽 solid；selected/pulsing 槽 breath，speed `0.4` |
+| Idle | `#FFFFFF` | 普通槽 solid；selected/pulsing 槽 breath，speed `0.4` |
+| Awaiting approval/response | `#FF6D00` | 普通槽 solid；selected/pulsing 槽 breath，speed `0.4` |
+| Error | `#FF0033` | 普通槽 solid；selected/pulsing 槽 breath，speed `0.4` |
+| Off | `#000000` | off，brightness `0` |
+
+选择任务后的 4 秒强调窗口会让 Command 键以当前 ambient 颜色 solid 点亮；选中 Working 时 ambient 使用蓝色 snake。语音优先覆盖 ambient：recording 为 `#2E8B57` snake、processing 为白色 snake、completed 为白色 solid。两种 snake 的 speed 都是 `0.4`。
+
+固件识别 Micro 的 `off / solid / snake / rainbow / breath / gradient / shallowBreath` 完整编号。当前 Desktop 日常链路实际使用的 `off / solid / snake / breath` 会保留下发颜色、亮度和 speed 语义；在 Arkey 的 Q6 渲染器中，`speed=0` 保持静止，普通 breath 可降到 0，shallowBreath 保留 50% 下限。当前服务恒发 `magic=0`、`sk=0`、`sa=0`；固件会解析并保留这些字段，但不猜测尚未观察到的同步行为。
+
+`rainbow / gradient / shallowBreath` 当前不会由日常 Desktop 状态链下发，其 Q6 渲染属于实验适配，不代表已复刻原设备逐帧算法。Q6 的 LED 数量、排列、透光材料和电气校准也与原设备不同，因此这里的“对齐”指当前 Desktop 日常状态、packed RGB、亮度、效果类型和速度控制语义对齐；snake 路径、呼吸周期/曲线及肉眼色差仍需原设备 A/B 测量，不能描述为物理像素级一致。
 
 ## 8. 恢复与验收
 

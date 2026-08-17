@@ -88,7 +88,7 @@ PATH="/opt/homebrew/opt/arm-none-eabi-gcc@8/bin:/opt/homebrew/opt/arm-none-eabi-
   qmk compile -kb keychron/q6_pro/ansi_encoder -km via
 
 mkdir -p "$ROOT/build"
-OUTPUT="$ROOT/build/arkey-q6-pro-codex-micro-lab-v0.1.4.bin"
+OUTPUT="$ROOT/build/arkey-q6-pro-codex-micro-lab-v0.1.5.bin"
 cp -f "$QMK_HOME/keychron_q6_pro_ansi_encoder_via.bin" "$OUTPUT"
 if command -v dfu-suffix >/dev/null 2>&1; then
   dfu-suffix -c "$OUTPUT"

@@ -59,6 +59,16 @@
 #define CM_EFFECT_BREATH 4
 #define CM_EFFECT_GRADIENT 5
 #define CM_EFFECT_SHALLOW_BREATH 6
+#define CM_EFFECT_LAST CM_EFFECT_SHALLOW_BREATH
+
+/*
+ * Codex Micro reports brightness, speed, and effect-specific magic as
+ * normalized values. Preserve them as 8-bit state; brightness 0 is off and
+ * speed 0 is still. The timing tick and snake width below are Q6-specific
+ * visual calibration, not vendor firmware values.
+ */
+#define CM_ANIMATION_TICK_MS 8
+#define CM_SNAKE_WIDTH 32
 
 typedef struct PACKED {
     uint8_t row;
@@ -81,6 +91,10 @@ typedef struct {
     uint8_t brightness;
     uint8_t effect;
     uint8_t speed;
+    uint8_t magic;
+    bool sync_keys;
+    bool sync_ambient;
+    uint32_t started_at;
 } cm_light_t;
 
 typedef enum {
@@ -106,6 +120,7 @@ static uint16_t json_length;
 static cm_light_t slots[6];
 static cm_light_t keys_light;
 static cm_light_t ambient_light;
+static uint32_t render_time;
 
 static cm_event_t events[CM_EVENT_QUEUE_SIZE];
 static uint8_t event_head;
@@ -354,11 +369,30 @@ static uint8_t parse_unit_after(const char *position, const char *key, uint8_t f
     return result > 255 ? 255 : (uint8_t)result;
 }
 
+static bool parse_flag_after(const char *position, const char *key, bool fallback) {
+    if (position == NULL) return fallback;
+    const char *value = position + strlen(key);
+    while (*value == ' ' || *value == ':') value++;
+    if (*value == '1' || strncmp(value, "true", 4) == 0) return true;
+    if (*value == '0' || strncmp(value, "false", 5) == 0) return false;
+    return fallback;
+}
+
 static void parse_light_object(const char *start, const char *end, cm_light_t *light) {
-    light->color = parse_uint_after(find_bounded(start, end, "\"c\":"), "\"c\":", light->color);
-    light->brightness = parse_unit_after(find_bounded(start, end, "\"b\":"), "\"b\":", light->brightness);
-    light->effect = (uint8_t)parse_uint_after(find_bounded(start, end, "\"e\":"), "\"e\":", light->effect);
-    light->speed = parse_unit_after(find_bounded(start, end, "\"s\":"), "\"s\":", light->speed);
+    cm_light_t next = *light;
+    next.color = parse_uint_after(find_bounded(start, end, "\"c\":"), "\"c\":", next.color);
+    next.brightness = parse_unit_after(find_bounded(start, end, "\"b\":"), "\"b\":", next.brightness);
+    uint32_t effect = parse_uint_after(find_bounded(start, end, "\"e\":"), "\"e\":", next.effect);
+    next.effect = effect <= CM_EFFECT_LAST ? (uint8_t)effect : CM_EFFECT_OFF;
+    next.speed = parse_unit_after(find_bounded(start, end, "\"s\":"), "\"s\":", next.speed);
+    next.magic = parse_unit_after(find_bounded(start, end, "\"m\":"), "\"m\":", next.magic);
+    next.sync_keys = parse_flag_after(find_bounded(start, end, "\"sk\":"), "\"sk\":", next.sync_keys);
+    next.sync_ambient = parse_flag_after(find_bounded(start, end, "\"sa\":"), "\"sa\":", next.sync_ambient);
+
+    if (next.color != light->color || next.brightness != light->brightness || next.effect != light->effect || next.speed != light->speed) {
+        next.started_at = timer_read32();
+    }
+    *light = next;
 }
 
 static void parse_threads_lighting(const char *json) {
@@ -393,14 +427,14 @@ static void handle_json_request(char *json) {
     char response[192];
     desktop_connected = true;
     if (strstr(json, "\"method\":\"sys.version\"") != NULL) {
-        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"0.1.4-arkey-lab\"}}", id);
+        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"0.1.5-arkey-lab\"}}", id);
     } else if (strstr(json, "\"method\":\"device.status\"") != NULL) {
 #ifdef KC_BLUETOOTH_ENABLE
         uint8_t battery = battery_get_percentage();
 #else
         uint8_t battery = 100;
 #endif
-        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"0.1.4-arkey-lab\",\"profile_index\":0,\"layer_index\":0,\"battery\":%u,\"is_charging\":true}}", id, battery);
+        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"0.1.5-arkey-lab\",\"profile_index\":0,\"layer_index\":0,\"battery\":%u,\"is_charging\":true}}", id, battery);
     } else if (strstr(json, "\"method\":\"v.oai.thstatus\"") != NULL) {
         parse_threads_lighting(json);
         snprintf(response, sizeof(response), "{\"id\":%d,\"result\":true}", id);
@@ -621,51 +655,85 @@ void codex_micro_lab_task(void) {
     drain_event();
 }
 
-static uint8_t triangle(uint8_t phase) {
-    return phase < 128 ? (uint8_t)(phase * 2) : (uint8_t)((255 - phase) * 2);
+static uint8_t light_phase(const cm_light_t *light, uint32_t now) {
+    if (light->speed == 0) return 0;
+    uint16_t ticks = (uint16_t)((now - light->started_at) / CM_ANIMATION_TICK_MS);
+    return (uint8_t)((uint32_t)ticks * light->speed >> 8);
 }
 
-static RGB render_light(const cm_light_t *light, uint8_t led, bool ambient) {
-    uint8_t value = light->brightness;
-    uint32_t elapsed = timer_read32();
-    if (light->effect == CM_EFFECT_OFF || value == 0) return (RGB){0, 0, 0};
-    if (light->effect == CM_EFFECT_BREATH || light->effect == CM_EFFECT_SHALLOW_BREATH) {
-        uint16_t period = (uint16_t)(4200 - (uint16_t)light->speed * 12);
-        if (period < 900) period = 900;
-        uint8_t wave = triangle((uint8_t)((elapsed % period) * 256UL / period));
-        uint8_t floor = light->effect == CM_EFFECT_SHALLOW_BREATH ? 128 : 24;
-        value = (uint8_t)((uint16_t)value * (floor + (uint16_t)wave * (255 - floor) / 255) / 255);
-    } else if (light->effect == CM_EFFECT_SNAKE) {
-        uint8_t head = (uint8_t)((elapsed / 24 + light->speed) % RGB_MATRIX_LED_COUNT);
-        uint8_t distance = led > head ? led - head : head - led;
-        if (distance > RGB_MATRIX_LED_COUNT / 2) distance = RGB_MATRIX_LED_COUNT - distance;
-        value = distance < 8 ? (uint8_t)((uint16_t)value * (8 - distance) / 8) : 0;
-    }
-    if (ambient) value = (uint8_t)((uint16_t)value * 52 / 255);
-    uint8_t red = (uint8_t)(light->color >> 16);
-    uint8_t green = (uint8_t)(light->color >> 8);
-    uint8_t blue = (uint8_t)light->color;
+static uint8_t triangle(uint8_t phase) {
+    return phase < 128 ? (uint8_t)(phase * 2) : (uint8_t)(255 - (phase - 128) * 2);
+}
+
+static uint8_t smooth_breath_wave(uint8_t phase) {
+    uint32_t ramp = triangle((uint8_t)(phase * 2));
+    return (uint8_t)(ramp * ramp * (765 - 2 * ramp) / 65025);
+}
+
+static uint8_t led_strip_position(uint8_t led) {
+#if RGB_MATRIX_LED_COUNT <= 1
+    (void)led;
+    return 0;
+#else
+    return (uint8_t)((uint16_t)led * 255 / (RGB_MATRIX_LED_COUNT - 1));
+#endif
+}
+
+static uint8_t circular_distance(uint8_t left, uint8_t right) {
+    uint8_t distance = left > right ? left - right : right - left;
+    return distance > 128 ? (uint8_t)(256 - distance) : distance;
+}
+
+static RGB scaled_color(uint32_t color, uint8_t value) {
+    uint8_t red = (uint8_t)(color >> 16);
+    uint8_t green = (uint8_t)(color >> 8);
+    uint8_t blue = (uint8_t)color;
     return (RGB){(uint8_t)((uint16_t)red * value / 255), (uint8_t)((uint16_t)green * value / 255), (uint8_t)((uint16_t)blue * value / 255)};
 }
 
-static void set_mapped_color(uint8_t target, const cm_light_t *light, uint8_t led_min, uint8_t led_max) {
+static RGB render_light(const cm_light_t *light, uint8_t led, uint32_t now) {
+    uint8_t value = light->brightness;
+    if (light->effect == CM_EFFECT_OFF || value == 0) return (RGB){0, 0, 0};
+
+    uint8_t phase = light_phase(light, now);
+    if (light->effect == CM_EFFECT_BREATH || light->effect == CM_EFFECT_SHALLOW_BREATH) {
+        uint8_t wave = smooth_breath_wave(phase);
+        if (light->effect == CM_EFFECT_SHALLOW_BREATH) wave = (uint8_t)(128 + wave / 2);
+        value = (uint8_t)((uint16_t)value * wave / 255);
+    } else if (light->effect == CM_EFFECT_SNAKE) {
+        uint8_t head = (uint8_t)(phase * 2);
+        uint8_t distance = circular_distance(led_strip_position(led), head);
+        uint8_t wave = distance < CM_SNAKE_WIDTH ? (uint8_t)((uint16_t)(CM_SNAKE_WIDTH - distance) * 255 / CM_SNAKE_WIDTH) : 0;
+        value = (uint8_t)((uint16_t)value * wave / 255);
+    } else if (light->effect == CM_EFFECT_RAINBOW) {
+        HSV hsv = {(uint8_t)(led_strip_position(led) + phase), 255, value};
+        return hsv_to_rgb(hsv);
+    } else if (light->effect == CM_EFFECT_GRADIENT) {
+        uint8_t wave = (uint8_t)(128 + triangle((uint8_t)(led_strip_position(led) + phase)) / 2);
+        value = (uint8_t)((uint16_t)value * wave / 255);
+    }
+    return scaled_color(light->color, value);
+}
+
+static void set_mapped_color(uint8_t target, const cm_light_t *light, uint8_t led_min, uint8_t led_max, uint32_t now) {
     cm_mapping_t mapping = config.mappings[target];
     if (mapping.row >= MATRIX_ROWS || mapping.col >= MATRIX_COLS) return;
     uint8_t led = g_led_config.matrix_co[mapping.row][mapping.col];
     if (led == NO_LED || led < led_min || led >= led_max) return;
-    RGB rgb = render_light(light, led, false);
+    RGB rgb = render_light(light, led, now);
     rgb_matrix_set_color(led, rgb.r, rgb.g, rgb.b);
 }
 
 bool rgb_matrix_indicators_advanced_kb(uint8_t led_min, uint8_t led_max) {
     ensure_config();
     if (using_usb() && desktop_connected) {
+        if (led_min == 0 || render_time == 0) render_time = timer_read32();
         for (uint8_t led = led_min; led < led_max; led++) {
-            RGB rgb = render_light(&ambient_light, led, true);
+            RGB rgb = render_light(&ambient_light, led, render_time);
             rgb_matrix_set_color(led, rgb.r, rgb.g, rgb.b);
         }
-        for (uint8_t target = CM_TARGET_COMMAND_FIRST; target <= CM_TARGET_ENCODER_PRESS; target++) set_mapped_color(target, &keys_light, led_min, led_max);
-        for (uint8_t slot = 0; slot < 6; slot++) set_mapped_color(slot, &slots[slot], led_min, led_max);
+        for (uint8_t target = CM_TARGET_COMMAND_FIRST; target <= CM_TARGET_ENCODER_PRESS; target++) set_mapped_color(target, &keys_light, led_min, led_max, render_time);
+        for (uint8_t slot = 0; slot < 6; slot++) set_mapped_color(slot, &slots[slot], led_min, led_max, render_time);
     }
     return rgb_matrix_indicators_advanced_user(led_min, led_max);
 }

@@ -72,6 +72,6 @@ jobs:
           QMK_HOME="$RUNNER_TEMP/qmk_firmware"
           ./scripts/build-codex-micro-lab-q6-pro.sh
           --acknowledge-device-identity-test
-      - run: sha256sum build/arkey-q6-pro-codex-micro-lab-v0.1.4.bin
+      - run: sha256sum build/arkey-q6-pro-codex-micro-lab-v0.1.5.bin
       - name: Verify Lab build restored upstream files
         run: test -z "$(git -C "$RUNNER_TEMP/qmk_firmware" status --short --untracked-files=no)"
