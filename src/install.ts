@@ -1,7 +1,28 @@
-import { cpSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+
+function readJson(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
+  return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+}
+
+function writeJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+}
+
+function addHook(settings: Record<string, unknown>, event: string, command: string): void {
+  const hooks = (settings.hooks ??= {}) as Record<string, unknown[]>;
+  const entries = (hooks[event] ??= []);
+  hooks[event] = entries.filter((entry) => {
+    const serialized = JSON.stringify(entry);
+    const isArkey = (serialized.includes("arkey") || serialized.includes("/.arkey/app/")) && serialized.includes(" event ");
+    return !isArkey;
+  });
+  hooks[event].push({ hooks: [{ type: "command", command, timeout: 5 }] });
+}
 
 const runtimeApp = join(homedir(), ".arkey", "app");
 
@@ -18,6 +39,27 @@ function deployRuntime(cliPath: string): string {
     cpSync(firmwareBinary, join(runtimeApp, "build", "arkey-q6-pro-ansi-v0.1.0.bin"));
   }
   return join(runtimeApp, "dist", "src", "cli.js");
+}
+
+export function installHooks(cliPath: string): string[] {
+  const runtimeEntrypoint = deployRuntime(cliPath);
+  const escaped = `${JSON.stringify(process.execPath)} ${JSON.stringify(runtimeEntrypoint)}`;
+  const installed: string[] = [];
+
+  const codexPath = join(homedir(), ".codex", "hooks.json");
+  const codex = readJson(codexPath);
+  for (const event of ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SubagentStart", "SubagentStop"]) {
+    addHook(codex, event, `${escaped} event codex ${event}`);
+  }
+  writeJson(codexPath, codex); installed.push(codexPath);
+
+  const claudePath = join(homedir(), ".claude", "settings.json");
+  const claude = readJson(claudePath);
+  for (const event of ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SubagentStart", "SubagentStop", "Notification"]) {
+    addHook(claude, event, `${escaped} event claude ${event}`);
+  }
+  writeJson(claudePath, claude); installed.push(claudePath);
+  return installed;
 }
 
 export const launchAgentPath = join(homedir(), "Library", "LaunchAgents", "io.arkey.daemon.plist");

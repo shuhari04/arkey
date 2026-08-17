@@ -19,6 +19,12 @@ struct ContentView: View {
     @State private var transientMessage: String?
     @State private var transientMessageSeverity: CommandSurfaceMessageSeverity = .info
     @State private var transientMessageTask: Task<Void, Never>?
+    @StateObject private var firmwareFlasher = FirmwareFlashingService()
+    @StateObject private var updates = ArkeyUpdateService()
+    @StateObject private var diagnostics = ArkeyDiagnostics.shared
+    @State private var firmwareToolVisible = false
+    @State private var updateCenterVisible = false
+    @State private var diagnosticCenterVisible = false
     @FocusState private var composerFocused: Bool
 
     init(controller: ArkeyController, notch: ArkeyNotchCoordinator) {
@@ -36,6 +42,7 @@ struct ContentView: View {
                 if developerDrawerVisible {
                     DeveloperLightingDrawer(
                         store: store,
+                        controller: controller,
                         isPresented: $developerDrawerVisible
                     )
                     .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -132,6 +139,15 @@ struct ContentView: View {
         .sheet(isPresented: $store.importPickerVisible, onDismiss: { composerFocused = true }) {
             TaskImportView(store: store)
         }
+        .sheet(isPresented: $firmwareToolVisible) {
+            FirmwareToolView(flasher: firmwareFlasher)
+        }
+        .sheet(isPresented: $updateCenterVisible) {
+            UpdateCenterView(updates: updates)
+        }
+        .sheet(isPresented: $diagnosticCenterVisible) {
+            DiagnosticCenterView(diagnostics: diagnostics)
+        }
         .confirmationDialog(
             "按键已被占用",
             isPresented: Binding(
@@ -151,6 +167,12 @@ struct ContentView: View {
         }
         .task {
             await store.start()
+            updates.start()
+            diagnostics.record(
+                category: .app,
+                name: "app.command-surface.started",
+                details: ["version": ArkeyUpdateService.currentVersion]
+            )
             speech.refreshPermissionStatus()
             if developerDrawerVisible {
                 sidebarWasVisibleBeforeDrawer = taskRailVisible
@@ -275,7 +297,7 @@ struct ContentView: View {
             VStack(spacing: 12) {
                 if store.isCodexMicroLab {
                     CodexMicroLabConfiguratorView(store: store)
-                    keyboardWorkspace
+                    CodexMicroMappingWorkspaceView(store: store)
                         .frame(maxHeight: .infinity, alignment: .top)
                         .layoutPriority(1)
                 } else {
@@ -350,6 +372,33 @@ struct ContentView: View {
 
             Spacer()
             statusMenu
+
+            Button {
+                updateCenterVisible = true
+            } label: {
+                Image(systemName: updates.hasAvailableUpdate ? "arrow.down.circle.fill" : "arrow.down.circle")
+            }
+            .buttonStyle(ArkeyUpdateButtonStyle(isAvailable: updates.hasAvailableUpdate))
+            .help(updates.hasAvailableUpdate ? "有新的 ARkey 版本可下载" : "打开软件更新")
+            .accessibilityLabel(updates.hasAvailableUpdate ? "有新的 ARkey 版本可下载" : "打开软件更新")
+
+            Button {
+                diagnosticCenterVisible = true
+            } label: {
+                Image(systemName: "stethoscope")
+            }
+            .buttonStyle(ArkeyIconButtonStyle())
+            .help("打开诊断中心")
+            .accessibilityLabel("打开诊断中心")
+
+            Button {
+                firmwareToolVisible = true
+            } label: {
+                Image(systemName: "cpu")
+            }
+            .buttonStyle(ArkeyIconButtonStyle())
+            .help("打开固件工具")
+            .accessibilityLabel("打开固件工具")
 
             Button {
                 showOnboarding = true
@@ -711,7 +760,6 @@ struct ContentView: View {
     }
 
     private var connectionSummary: String {
-        if store.isCodexMicroLab { return "Codex Micro Lab connected" }
         if store.isUSBV2Ready && store.appServerReady { return "Keyboard and Codex connected" }
         if store.isUSBV2Ready { return "Keyboard connected · Codex waiting" }
         switch store.transport {

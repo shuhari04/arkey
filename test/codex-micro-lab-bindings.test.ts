@@ -12,7 +12,7 @@ const mapper = await import(new URL("../../scripts/codex-micro-lab-bindings.mjs"
   resolveCodexMicroTargetName: (name: string) => string;
 };
 
-test("Arkey bindings derive native Micro targets while encoder rotation remains permanent", () => {
+test("Arkey bindings derive native Micro targets and enable V1 rotation when reasoning is bound", () => {
   const profile = {
     controls: [
       { id: "key-a", matrix: { row: 1, column: 2 } },
@@ -40,12 +40,12 @@ test("Arkey bindings derive native Micro targets while encoder rotation remains 
   assert.equal(result.skipped[0]?.binding.actionId, "skill");
 });
 
-test("an empty host binding document still cannot disable the Lab encoder", () => {
+test("an empty host binding document leaves optional V1 rotation disabled", () => {
   const result = mapper.deriveCodexMicroMappings(
     { bindings: [] },
     { tasks: [] },
     { controls: [], encoder: { id: "encoder-0", pressControlId: "encoder-key" } },
   );
-  assert.equal(result.encoderEnabled, true);
+  assert.equal(result.encoderEnabled, false);
   assert.equal(mapper.resolveCodexMicroTargetName("ptt"), "command-5");
 });

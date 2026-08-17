@@ -28,6 +28,7 @@
 #define CM_CONFIG_CLEAR 0x05
 #define CM_CONFIG_ENCODER 0x06
 #define CM_CONFIG_RESET 0x07
+#define CM_CONFIG_ENTER_DFU 0x08
 #define CM_CONFIG_CAPTURED 0x13
 #define CM_CONFIG_ACK 0x7F
 
@@ -47,10 +48,18 @@
 #define CM_MAPPING_UNASSIGNED 0xFF
 #define CM_CONFIG_MAGIC_0 0x43
 #define CM_CONFIG_MAGIC_1 0x4D
-#define CM_CONFIG_STORAGE_VERSION 2
+#define CM_CONFIG_STORAGE_VERSION 3
 #define CM_JSON_BUFFER_SIZE 1536
 #define CM_EVENT_QUEUE_SIZE 16
 #define CM_CAPTURE_TIMEOUT_MS 30000
+
+#if defined(CODEX_MICRO_V1_MAX)
+#    define CM_LAB_BUILD_VERSION "0.1.9-v1max"
+#elif defined(CODEX_MICRO_Q6_PRO)
+#    define CM_LAB_BUILD_VERSION "0.1.5-q6pro"
+#else
+#    define CM_LAB_BUILD_VERSION "0.1.0-unknown-board"
+#endif
 
 #define CM_EFFECT_OFF 0
 #define CM_EFFECT_SOLID 1
@@ -59,6 +68,16 @@
 #define CM_EFFECT_BREATH 4
 #define CM_EFFECT_GRADIENT 5
 #define CM_EFFECT_SHALLOW_BREATH 6
+#define CM_EFFECT_LAST CM_EFFECT_SHALLOW_BREATH
+
+/*
+ * Codex Micro reports brightness, speed, and effect-specific magic as
+ * normalized values. Preserve them as 8-bit state; brightness 0 is off and
+ * speed 0 is still. The timing tick and snake width below are Q6-specific
+ * visual calibration, not vendor firmware values.
+ */
+#define CM_ANIMATION_TICK_MS 8
+#define CM_SNAKE_WIDTH 32
 
 typedef struct PACKED {
     uint8_t row;
@@ -81,6 +100,10 @@ typedef struct {
     uint8_t brightness;
     uint8_t effect;
     uint8_t speed;
+    uint8_t magic;
+    bool sync_keys;
+    bool sync_ambient;
+    uint32_t started_at;
 } cm_light_t;
 
 typedef enum {
@@ -106,6 +129,7 @@ static uint16_t json_length;
 static cm_light_t slots[6];
 static cm_light_t keys_light;
 static cm_light_t ambient_light;
+static uint32_t render_time;
 
 static cm_event_t events[CM_EVENT_QUEUE_SIZE];
 static uint8_t event_head;
@@ -118,6 +142,9 @@ static uint32_t capture_started_at;
 static bool capture_release_suppressed;
 static uint8_t capture_row;
 static uint8_t capture_col;
+/* Reset only after the configuration ACK has left the USB endpoint. */
+static bool dfu_pending;
+static uint32_t dfu_pending_at;
 
 /*
  * Native Micro target order:
@@ -129,6 +156,29 @@ static uint8_t capture_col;
  * Encoder rotation is intentionally not part of this table. It is permanently
  * claimed by codex_micro_lab_encoder_preprocess() while the keyboard uses USB.
  */
+#if defined(CODEX_MICRO_V1_MAX)
+/* V1 Max has a dedicated navigation column, so Lab comes up usable before a
+ * host writes any custom mappings: PgUp=Agent 1, PgDn=Agent 2, Home=PTT. */
+static const cm_mapping_t v1_default_mappings[CM_TARGET_COUNT] = {
+    [0] = {1, 15},
+    [1] = {2, 15},
+    [10] = {3, 15},
+    [12] = {0, 15},
+    [2] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [3] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [4] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [5] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [6] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [7] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [8] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [9] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [11] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [13] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [14] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [15] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+    [16] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
+};
+#else
 static const cm_mapping_t default_mappings[CM_TARGET_COUNT] = {
     [0] = {4, 17},
     [1] = {4, 18},
@@ -148,6 +198,7 @@ static const cm_mapping_t default_mappings[CM_TARGET_COUNT] = {
     [15] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
     [16] = {CM_MAPPING_UNASSIGNED, CM_MAPPING_UNASSIGNED},
 };
+#endif
 
 static uint8_t config_checksum(const cm_persisted_config_t *value) {
     const uint8_t *bytes = (const uint8_t *)value;
@@ -162,27 +213,42 @@ static void config_defaults(void) {
     config.magic_1 = CM_CONFIG_MAGIC_1;
     config.version = CM_CONFIG_STORAGE_VERSION;
     config.encoder_enabled = 1;
+#if defined(CODEX_MICRO_V1_MAX)
+    memcpy(config.mappings, v1_default_mappings, sizeof(config.mappings));
+#else
     memcpy(config.mappings, default_mappings, sizeof(config.mappings));
+#endif
     config.checksum = config_checksum(&config);
 }
 
 static void save_config(void) {
     config.checksum = config_checksum(&config);
+#ifdef CODEX_MICRO_EECONFIG_OFFSET_API
+    eeconfig_update_user_datablock(&config, 0, sizeof(config));
+#else
     eeconfig_update_user_datablock(&config);
+#endif
 }
 
 static void ensure_config(void) {
     if (config_loaded) return;
+#ifdef CODEX_MICRO_EECONFIG_OFFSET_API
+    eeconfig_read_user_datablock(&config, 0, sizeof(config));
+#else
     eeconfig_read_user_datablock(&config);
+#endif
     if (config.magic_0 != CM_CONFIG_MAGIC_0 || config.magic_1 != CM_CONFIG_MAGIC_1 ||
         config.version != CM_CONFIG_STORAGE_VERSION || config.checksum != config_checksum(&config)) {
         config_defaults();
         save_config();
-    } else if (config.encoder_enabled != 1) {
+    }
+#if defined(CODEX_MICRO_Q6_PRO)
+    else if (config.encoder_enabled != 1) {
         /* Old or externally modified data may never disable Micro rotation. */
         config.encoder_enabled = 1;
         save_config();
     }
+#endif
     config_loaded = true;
 }
 
@@ -354,11 +420,30 @@ static uint8_t parse_unit_after(const char *position, const char *key, uint8_t f
     return result > 255 ? 255 : (uint8_t)result;
 }
 
+static bool parse_flag_after(const char *position, const char *key, bool fallback) {
+    if (position == NULL) return fallback;
+    const char *value = position + strlen(key);
+    while (*value == ' ' || *value == ':') value++;
+    if (*value == '1' || strncmp(value, "true", 4) == 0) return true;
+    if (*value == '0' || strncmp(value, "false", 5) == 0) return false;
+    return fallback;
+}
+
 static void parse_light_object(const char *start, const char *end, cm_light_t *light) {
-    light->color = parse_uint_after(find_bounded(start, end, "\"c\":"), "\"c\":", light->color);
-    light->brightness = parse_unit_after(find_bounded(start, end, "\"b\":"), "\"b\":", light->brightness);
-    light->effect = (uint8_t)parse_uint_after(find_bounded(start, end, "\"e\":"), "\"e\":", light->effect);
-    light->speed = parse_unit_after(find_bounded(start, end, "\"s\":"), "\"s\":", light->speed);
+    cm_light_t next = *light;
+    next.color = parse_uint_after(find_bounded(start, end, "\"c\":"), "\"c\":", next.color);
+    next.brightness = parse_unit_after(find_bounded(start, end, "\"b\":"), "\"b\":", next.brightness);
+    uint32_t effect = parse_uint_after(find_bounded(start, end, "\"e\":"), "\"e\":", next.effect);
+    next.effect = effect <= CM_EFFECT_LAST ? (uint8_t)effect : CM_EFFECT_OFF;
+    next.speed = parse_unit_after(find_bounded(start, end, "\"s\":"), "\"s\":", next.speed);
+    next.magic = parse_unit_after(find_bounded(start, end, "\"m\":"), "\"m\":", next.magic);
+    next.sync_keys = parse_flag_after(find_bounded(start, end, "\"sk\":"), "\"sk\":", next.sync_keys);
+    next.sync_ambient = parse_flag_after(find_bounded(start, end, "\"sa\":"), "\"sa\":", next.sync_ambient);
+
+    if (next.color != light->color || next.brightness != light->brightness || next.effect != light->effect || next.speed != light->speed) {
+        next.started_at = timer_read32();
+    }
+    *light = next;
 }
 
 static void parse_threads_lighting(const char *json) {
@@ -393,14 +478,14 @@ static void handle_json_request(char *json) {
     char response[192];
     desktop_connected = true;
     if (strstr(json, "\"method\":\"sys.version\"") != NULL) {
-        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"0.1.4-arkey-lab\"}}", id);
+        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"%s\"}}", id, CM_LAB_BUILD_VERSION);
     } else if (strstr(json, "\"method\":\"device.status\"") != NULL) {
 #ifdef KC_BLUETOOTH_ENABLE
         uint8_t battery = battery_get_percentage();
 #else
         uint8_t battery = 100;
 #endif
-        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"0.1.4-arkey-lab\",\"profile_index\":0,\"layer_index\":0,\"battery\":%u,\"is_charging\":true}}", id, battery);
+        snprintf(response, sizeof(response), "{\"id\":%d,\"result\":{\"version\":\"%s\",\"profile_index\":0,\"layer_index\":0,\"battery\":%u,\"is_charging\":true}}", id, CM_LAB_BUILD_VERSION, battery);
     } else if (strstr(json, "\"method\":\"v.oai.thstatus\"") != NULL) {
         parse_threads_lighting(json);
         snprintf(response, sizeof(response), "{\"id\":%d,\"result\":true}", id);
@@ -515,13 +600,18 @@ static bool handle_config_report(const uint8_t *data, uint8_t length) {
         case CM_CONFIG_ENCODER:
             if (payload_length != 1) send_config_ack(sequence, opcode, CM_STATUS_BAD_LENGTH);
             else {
-                /* The compatibility surface owns the encoder on USB. A legacy
-                 * "disable" request is acknowledged but deliberately ignored. */
+#if defined(CODEX_MICRO_Q6_PRO)
+                /* Q6 Pro's Lab surface owns rotation on USB. A legacy disable
+                 * request is acknowledged but deliberately ignored. */
                 (void)payload;
                 if (config.encoder_enabled != 1) {
                     config.encoder_enabled = 1;
                     save_config();
                 }
+#else
+                config.encoder_enabled = payload[0] != 0;
+                save_config();
+#endif
                 send_config_ack(sequence, opcode, CM_STATUS_OK);
             }
             break;
@@ -529,6 +619,17 @@ static bool handle_config_report(const uint8_t *data, uint8_t length) {
             config_defaults();
             save_config();
             send_config_ack(sequence, opcode, CM_STATUS_OK);
+            break;
+        case CM_CONFIG_ENTER_DFU:
+            /* This is intentionally not a generic reset command. It requires
+             * an exact local confirmation token and sends its ACK first. */
+            if (payload_length != 4 || payload[0] != 'D' || payload[1] != 'F' || payload[2] != 'U' || payload[3] != '!') {
+                send_config_ack(sequence, opcode, CM_STATUS_BAD_LENGTH);
+            } else {
+                send_config_ack(sequence, opcode, CM_STATUS_OK);
+                dfu_pending = true;
+                dfu_pending_at = timer_read32();
+            }
             break;
         default:
             send_config_ack(sequence, opcode, CM_STATUS_BAD_TARGET);
@@ -538,7 +639,21 @@ static bool handle_config_report(const uint8_t *data, uint8_t length) {
 }
 
 bool codex_micro_lab_command(uint8_t *data, uint8_t length) {
-    if (!using_usb()) return false;
+    /* V1 Max's ChibiOS endpoint may pass report-id-stripped payloads. Normalize
+     * canonical 07+A7 and the observed A7 / 00+A7 / 00+07+A7 body forms. */
+    uint8_t framed[CM_REPORT_SIZE] = {0};
+    if (!(length == CM_REPORT_SIZE && data[0] == CM_CONFIG_REPORT_ID)) {
+        uint8_t magic_offset = 0;
+        while (magic_offset < length && magic_offset < 4 && data[magic_offset] != CM_CONFIG_MAGIC) magic_offset++;
+        if (magic_offset < length && magic_offset < 4) {
+            uint8_t body_length = length - magic_offset;
+            if (body_length > CM_REPORT_SIZE - 1) body_length = CM_REPORT_SIZE - 1;
+            framed[0] = CM_CONFIG_REPORT_ID;
+            memcpy(&framed[1], &data[magic_offset], body_length);
+            data = framed;
+            length = CM_REPORT_SIZE;
+        }
+    }
     if (handle_codex_report(data, length)) return true;
     if (handle_config_report(data, length)) return true;
     return false;
@@ -599,17 +714,22 @@ bool codex_micro_lab_process_record(uint16_t keycode, keyrecord_t *record) {
 
 bool codex_micro_lab_encoder_preprocess(uint8_t index, bool clockwise) {
     ensure_config();
-    if (!using_usb()) return true;
+    if (!using_usb() || !config.encoder_enabled) return true;
 
     // Claim the turn before ENCODER_MAP emits KC_VOLD/KC_VOLU. Q6 Pro's
-    // encoder orientation is opposite to the Codex Micro protocol direction,
-    // so normalize it here before task() emits ENC_CW or ENC_CC.
+    // encoder orientation is opposite to the Codex Micro protocol direction;
+    // V1 Max follows the same normalized event naming at this protocol layer.
     enqueue_event(CM_EVENT_HID, CM_TARGET_ENCODER_PRESS, 2, clockwise ? 1 : 0, index);
     return false;
 }
 
 void codex_micro_lab_task(void) {
     ensure_config();
+    /* `reset_keyboard()` writes QMK's STM32 DFU marker then resets. The delay
+     * lets macOS receive the configuration ACK before the USB disconnect. */
+    if (dfu_pending && timer_elapsed32(dfu_pending_at) >= 350) {
+        reset_keyboard();
+    }
     if (!using_usb()) {
         desktop_connected = false;
         json_length = 0;
@@ -621,51 +741,85 @@ void codex_micro_lab_task(void) {
     drain_event();
 }
 
-static uint8_t triangle(uint8_t phase) {
-    return phase < 128 ? (uint8_t)(phase * 2) : (uint8_t)((255 - phase) * 2);
+static uint8_t light_phase(const cm_light_t *light, uint32_t now) {
+    if (light->speed == 0) return 0;
+    uint16_t ticks = (uint16_t)((now - light->started_at) / CM_ANIMATION_TICK_MS);
+    return (uint8_t)((uint32_t)ticks * light->speed >> 8);
 }
 
-static RGB render_light(const cm_light_t *light, uint8_t led, bool ambient) {
-    uint8_t value = light->brightness;
-    uint32_t elapsed = timer_read32();
-    if (light->effect == CM_EFFECT_OFF || value == 0) return (RGB){0, 0, 0};
-    if (light->effect == CM_EFFECT_BREATH || light->effect == CM_EFFECT_SHALLOW_BREATH) {
-        uint16_t period = (uint16_t)(4200 - (uint16_t)light->speed * 12);
-        if (period < 900) period = 900;
-        uint8_t wave = triangle((uint8_t)((elapsed % period) * 256UL / period));
-        uint8_t floor = light->effect == CM_EFFECT_SHALLOW_BREATH ? 128 : 24;
-        value = (uint8_t)((uint16_t)value * (floor + (uint16_t)wave * (255 - floor) / 255) / 255);
-    } else if (light->effect == CM_EFFECT_SNAKE) {
-        uint8_t head = (uint8_t)((elapsed / 24 + light->speed) % RGB_MATRIX_LED_COUNT);
-        uint8_t distance = led > head ? led - head : head - led;
-        if (distance > RGB_MATRIX_LED_COUNT / 2) distance = RGB_MATRIX_LED_COUNT - distance;
-        value = distance < 8 ? (uint8_t)((uint16_t)value * (8 - distance) / 8) : 0;
-    }
-    if (ambient) value = (uint8_t)((uint16_t)value * 52 / 255);
-    uint8_t red = (uint8_t)(light->color >> 16);
-    uint8_t green = (uint8_t)(light->color >> 8);
-    uint8_t blue = (uint8_t)light->color;
+static uint8_t triangle(uint8_t phase) {
+    return phase < 128 ? (uint8_t)(phase * 2) : (uint8_t)(255 - (phase - 128) * 2);
+}
+
+static uint8_t smooth_breath_wave(uint8_t phase) {
+    uint32_t ramp = triangle((uint8_t)(phase * 2));
+    return (uint8_t)(ramp * ramp * (765 - 2 * ramp) / 65025);
+}
+
+static uint8_t led_strip_position(uint8_t led) {
+#if RGB_MATRIX_LED_COUNT <= 1
+    (void)led;
+    return 0;
+#else
+    return (uint8_t)((uint16_t)led * 255 / (RGB_MATRIX_LED_COUNT - 1));
+#endif
+}
+
+static uint8_t circular_distance(uint8_t left, uint8_t right) {
+    uint8_t distance = left > right ? left - right : right - left;
+    return distance > 128 ? (uint8_t)(256 - distance) : distance;
+}
+
+static RGB scaled_color(uint32_t color, uint8_t value) {
+    uint8_t red = (uint8_t)(color >> 16);
+    uint8_t green = (uint8_t)(color >> 8);
+    uint8_t blue = (uint8_t)color;
     return (RGB){(uint8_t)((uint16_t)red * value / 255), (uint8_t)((uint16_t)green * value / 255), (uint8_t)((uint16_t)blue * value / 255)};
 }
 
-static void set_mapped_color(uint8_t target, const cm_light_t *light, uint8_t led_min, uint8_t led_max) {
+static RGB render_light(const cm_light_t *light, uint8_t led, uint32_t now) {
+    uint8_t value = light->brightness;
+    if (light->effect == CM_EFFECT_OFF || value == 0) return (RGB){0, 0, 0};
+
+    uint8_t phase = light_phase(light, now);
+    if (light->effect == CM_EFFECT_BREATH || light->effect == CM_EFFECT_SHALLOW_BREATH) {
+        uint8_t wave = smooth_breath_wave(phase);
+        if (light->effect == CM_EFFECT_SHALLOW_BREATH) wave = (uint8_t)(128 + wave / 2);
+        value = (uint8_t)((uint16_t)value * wave / 255);
+    } else if (light->effect == CM_EFFECT_SNAKE) {
+        uint8_t head = (uint8_t)(phase * 2);
+        uint8_t distance = circular_distance(led_strip_position(led), head);
+        uint8_t wave = distance < CM_SNAKE_WIDTH ? (uint8_t)((uint16_t)(CM_SNAKE_WIDTH - distance) * 255 / CM_SNAKE_WIDTH) : 0;
+        value = (uint8_t)((uint16_t)value * wave / 255);
+    } else if (light->effect == CM_EFFECT_RAINBOW) {
+        HSV hsv = {(uint8_t)(led_strip_position(led) + phase), 255, value};
+        return hsv_to_rgb(hsv);
+    } else if (light->effect == CM_EFFECT_GRADIENT) {
+        uint8_t wave = (uint8_t)(128 + triangle((uint8_t)(led_strip_position(led) + phase)) / 2);
+        value = (uint8_t)((uint16_t)value * wave / 255);
+    }
+    return scaled_color(light->color, value);
+}
+
+static void set_mapped_color(uint8_t target, const cm_light_t *light, uint8_t led_min, uint8_t led_max, uint32_t now) {
     cm_mapping_t mapping = config.mappings[target];
     if (mapping.row >= MATRIX_ROWS || mapping.col >= MATRIX_COLS) return;
     uint8_t led = g_led_config.matrix_co[mapping.row][mapping.col];
     if (led == NO_LED || led < led_min || led >= led_max) return;
-    RGB rgb = render_light(light, led, false);
+    RGB rgb = render_light(light, led, now);
     rgb_matrix_set_color(led, rgb.r, rgb.g, rgb.b);
 }
 
 bool rgb_matrix_indicators_advanced_kb(uint8_t led_min, uint8_t led_max) {
     ensure_config();
     if (using_usb() && desktop_connected) {
+        if (led_min == 0 || render_time == 0) render_time = timer_read32();
         for (uint8_t led = led_min; led < led_max; led++) {
-            RGB rgb = render_light(&ambient_light, led, true);
+            RGB rgb = render_light(&ambient_light, led, render_time);
             rgb_matrix_set_color(led, rgb.r, rgb.g, rgb.b);
         }
-        for (uint8_t target = CM_TARGET_COMMAND_FIRST; target <= CM_TARGET_ENCODER_PRESS; target++) set_mapped_color(target, &keys_light, led_min, led_max);
-        for (uint8_t slot = 0; slot < 6; slot++) set_mapped_color(slot, &slots[slot], led_min, led_max);
+        for (uint8_t target = CM_TARGET_COMMAND_FIRST; target <= CM_TARGET_ENCODER_PRESS; target++) set_mapped_color(target, &keys_light, led_min, led_max, render_time);
+        for (uint8_t slot = 0; slot < 6; slot++) set_mapped_color(slot, &slots[slot], led_min, led_max, render_time);
     }
     return rgb_matrix_indicators_advanced_user(led_min, led_max);
 }

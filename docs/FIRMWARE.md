@@ -1,6 +1,7 @@
-# Keychron Q6 Pro example firmware
+# Keychron Q6 Pro and V1 Max example firmware
 
-The repository provides a source-first example for **Keychron Q6 Pro ANSI Knob**.
+The repository provides source-first examples for **Keychron Q6 Pro ANSI Knob**
+and **Keychron V1 Max ANSI Knob**.
 It does not include an opaque precompiled binary and no script flashes a device.
 
 ## Pinned target
@@ -15,6 +16,25 @@ It does not include an opaque precompiled binary and no script flashes a device.
 | Bootloader | STM32 DFU |
 | Existing keyboard USB identity | Keychron `3434:0660` |
 | Raw HID usage | `FF60:0061` |
+
+## V1 Max ANSI Knob pinned target
+
+| Field | Expected value |
+| --- | --- |
+| Upstream | `https://github.com/Keychron/qmk_firmware` |
+| Commit | `bc1bdeb85f39cccd5e503f4d8f472078a8c1472a` |
+| QMK target | `keychron/v1_max/ansi_encoder` |
+| Keymap | `keychron` |
+| MCU | STM32F401 |
+| Bootloader | STM32 DFU |
+| Existing keyboard USB identity | Keychron `3434:0913` |
+| Raw HID usage | standard `FF60:0061`; Lab `FF00:0061` |
+
+The V1 standard build uses `ARKEY_QMK_HOME` and `scripts/build-v1-max-ansi.sh`.
+The isolated Lab build uses `QMK_HOME` and
+`scripts/build-codex-micro-lab-v1-max.sh --acknowledge-device-identity-test`.
+Both scripts refuse a dirty or wrong-revision Keychron checkout and restore all
+upstream files they change. The Lab script only compiles; it never flashes.
 
 Arkey keeps the keyboard's existing identity. It does not substitute another
 vendor's VID, PID, descriptor, or private device protocol. Provenance and
@@ -105,6 +125,10 @@ After a deliberate flash, verify before calling the firmware supported:
 The initial repository release is compile-verified. Treat physical flashing and
 the checklist above as downstream developer acceptance until evidence for a
 specific hardware revision is published.
+
+V1 Max ANSI Knob Lab v0.1.9 has a narrow self-owned-hardware USB acceptance for
+this release. That confirmation does not apply to a different PCB revision,
+wireless mode, another Desktop version, or ordinary/third-party firmware.
 
 The 2026-07-17 release check at the pinned commit produced a 67,428-byte binary
 with SHA-256

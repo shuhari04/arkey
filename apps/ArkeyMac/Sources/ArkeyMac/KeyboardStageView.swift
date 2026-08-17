@@ -9,18 +9,21 @@ struct KeyboardStageView: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: reduceMotion ? 0.25 : 1.0 / 30.0)) { timeline in
             GeometryReader { proxy in
-                let geometry = StageGeometry(profile: store.profile, size: proxy.size)
+                let geometry = StageGeometry(profile: store.displayedKeyboardProfile, size: proxy.size)
                 ZStack(alignment: .topLeading) {
                     stageBackground
-                    ForEach(store.profile.controls) { control in
+                    ForEach(store.displayedKeyboardProfile.controls) { control in
                         controlView(control, date: timeline.date, geometry: geometry)
                     }
                 }
             }
         }
-        .aspectRatio(store.profile.maxX / max(1, store.profile.maxY), contentMode: .fit)
+        .aspectRatio(store.displayedKeyboardProfile.maxX / max(1, store.displayedKeyboardProfile.maxY), contentMode: .fit)
+        .anchorPreference(key: CodexMicroEndpointPreferenceKey.self, value: .bounds) {
+            ["keyboard-stage": $0]
+        }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(store.profile.name) 模拟布局")
+        .accessibilityLabel("\(store.displayedKeyboardProfile.name) 模拟布局")
     }
 
     private var stageBackground: some View {
@@ -172,7 +175,7 @@ struct KeyboardStageView: View {
 
         Button {
             store.selectedControlId = control.id
-            Task { await store.bindCodexMicroTarget(to: control.id) }
+            if store.codexMicroSelectionActive { Task { await store.bindCodexMicroTarget(to: control.id) } }
         } label: {
             Group {
                 if control.kind == .encoder {
@@ -225,7 +228,7 @@ struct KeyboardStageView: View {
                 Button("清除 \(target.title)", role: .destructive) {
                     Task { await store.clearCodexMicroTarget(target) }
                 }
-            } else {
+            } else if store.codexMicroSelectionActive {
                 Button("绑定 \(store.selectedCodexMicroTarget.title)") {
                     Task { await store.bindCodexMicroTarget(to: control.id) }
                 }
@@ -268,7 +271,6 @@ struct KeyboardStageView: View {
                     Text(target.shortTitle)
                         .font(.system(size: metrics.font(7), weight: .black, design: .monospaced))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.65)
                 }
                 .foregroundStyle(.white)
             } else {
@@ -331,7 +333,7 @@ struct KeyboardStageView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            Text("MICRO")
+            Text(store.codexMicroLabSnapshot.encoderEnabled ? "MICRO" : "Q6")
                 .font(.system(size: metrics.font(4.8, minimum: 6), weight: .bold, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.45))
                 .lineLimit(1)
@@ -483,10 +485,9 @@ struct KeyboardStageView: View {
         if let target { return "\(name)，Codex Micro 独占，\(target.title)" }
         return "\(name)，未映射到 Codex Micro"
     }
-
 }
 
-private struct StageGeometry {
+struct StageGeometry {
     let profile: KeyboardProfileV2
     let size: CGSize
     private let inset: CGFloat = 15

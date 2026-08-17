@@ -5,66 +5,35 @@ struct CodexMicroLabConfiguratorView: View {
     @State private var showingConfigurationHint = false
     @State private var showingClearConfirmation = false
 
-    private let columns = [GridItem(.adaptive(minimum: 80, maximum: 112), spacing: 7)]
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 10) {
             HStack(spacing: 8) {
-                Label("选择槽位 → 按实体键", systemImage: "cursorarrow.click")
+                Label("右侧选择 Codex Micro 槽位，再点击左侧 V1 Max 键帽", systemImage: "point.3.connected.trianglepath.dotted")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(ArkeyTheme.textSecondary)
-                Spacer(minLength: 12)
-                Text(store.selectedCodexMicroTarget.title)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(ArkeyTheme.textPrimary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .help(store.selectedCodexMicroTarget.title)
             }
 
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 7) {
-                ForEach(CodexMicroLabTarget.allCases) { target in
-                    Button {
-                        store.selectCodexMicroTarget(target)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: target.symbol)
-                                .frame(width: 13)
-                            Text(target.shortTitle)
-                                .lineLimit(1)
-                        }
-                        .font(.system(size: 9, weight: .semibold))
-                        .padding(.horizontal, 7)
-                        .frame(maxWidth: .infinity, minHeight: 34, alignment: .center)
-                    }
-                    .buttonStyle(
-                        ArkeyTileButtonStyle(
-                            isSelected: target == store.selectedCodexMicroTarget,
-                            accent: ArkeyTheme.accent
-                        )
-                    )
-                    .overlay(alignment: .topTrailing) {
-                        if target == store.selectedCodexMicroTarget {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundStyle(ArkeyTheme.accent)
-                                .padding(4)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .accessibilityValue(target == store.selectedCodexMicroTarget ? "已选择" : "")
-                    .accessibilityLabel(target.title)
-                    .accessibilityAddTraits(target == store.selectedCodexMicroTarget ? .isSelected : [])
-                    .help(target.configurationHint ?? target.title)
-                }
-            }
+            Text(store.codexMicroSelectionActive ? "待映射：\(store.selectedCodexMicroTarget.title)" : "未选择槽位")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(store.codexMicroSelectionActive ? ArkeyTheme.accent : ArkeyTheme.textTertiary)
+                .lineLimit(1)
+
+            Spacer(minLength: 12)
 
             HStack(spacing: 8) {
-                Label("旋钮始终由 Micro 接管", systemImage: "dial.medium")
+                Toggle(
+                    "接管旋钮",
+                    isOn: Binding(
+                        get: { store.codexMicroLabSnapshot.encoderEnabled },
+                        set: { enabled in Task { await store.setCodexMicroEncoderEnabled(enabled) } }
+                    )
+                )
+                .toggleStyle(.switch)
+                .tint(ArkeyTheme.accent)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(ArkeyTheme.textSecondary)
-                .help("Micro 模式始终接管旋钮，不提供关闭开关")
-                .accessibilityLabel("旋钮始终由 Codex Micro 接管")
+                .help("Micro 接管旋钮；关闭后恢复 Q6/VIA 映射")
+                .accessibilityLabel("接管旋钮")
+                .accessibilityHint("开启后旋钮由 Codex Micro 独占")
 
                 if let hint = store.selectedCodexMicroTarget.configurationHint {
                     Button {
@@ -85,8 +54,6 @@ struct CodexMicroLabConfiguratorView: View {
                             .preferredColorScheme(.dark)
                     }
                 }
-
-                Spacer()
 
                 Label(verificationTitle, systemImage: verificationSymbol)
                     .font(.system(size: 10, weight: .semibold))

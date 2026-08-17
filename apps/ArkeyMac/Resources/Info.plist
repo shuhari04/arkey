@@ -5,15 +5,16 @@
     <key>CFBundleDisplayName</key><string>ARkey</string>
     <key>CFBundleExecutable</key><string>ArkeyMac</string>
     <key>CFBundleIconFile</key><string>Arkey</string>
-    <key>CFBundleIdentifier</key><string>dev.arkey.app</string>
+    <key>CFBundleIdentifier</key><string>dev.arkey.lab</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>ARkey</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>3.0.3</string>
+    <key>CFBundleVersion</key><string>22</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSMicrophoneUsageDescription</key><string>ARkey 使用麦克风把按住说话内容转写到 Composer，不保存音频，也不会自动发送。</string>
+    <key>NSAppleEventsUsageDescription</key><string>ARkey 仅在开发者抽屉中明确启用 legacy experiment 时，使用系统事件向前台终端发送测试按键。</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>ARkey 使用系统语音识别把语音转成待发送的提示词。</string>
 </dict>
 </plist>

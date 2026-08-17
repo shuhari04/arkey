@@ -1,0 +1,33 @@
+diff --git a/quantum/encoder.h b/quantum/encoder.h
+--- a/quantum/encoder.h
++++ b/quantum/encoder.h
+@@ -42,6 +42,7 @@ bool encoder_queue_event(uint8_t index, bool clockwise);
+ bool encoder_dequeue_event(uint8_t *index, bool *clockwise);
+
+ bool encoder_update_kb(uint8_t index, bool clockwise);
++bool encoder_preprocess_kb(uint8_t index, bool clockwise);
+ bool encoder_update_user(uint8_t index, bool clockwise);
+
+ #    ifdef SPLIT_KEYBOARD
+diff --git a/quantum/encoder.c b/quantum/encoder.c
+--- a/quantum/encoder.c
++++ b/quantum/encoder.c
+@@ -23,6 +23,8 @@ static bool encoder_handle_queue(void) {
+     uint8_t index;
+     bool    clockwise;
+     while (encoder_dequeue_event(&index, &clockwise)) {
++        if (!encoder_preprocess_kb(index, clockwise)) continue;
++
+ #ifdef ENCODER_MAP_ENABLE
+
+         // The delays below cater for Windows and its wonderful requirements.
+@@ -152,5 +154,9 @@ __attribute__((weak)) bool encoder_update_user(uint8_t index, bool clockwise) {
+     return true;
+ }
+
++__attribute__((weak)) bool encoder_preprocess_kb(uint8_t index, bool clockwise) {
++    return true;
++}
++
+ __attribute__((weak)) bool encoder_update_kb(uint8_t index, bool clockwise) {
+     bool res = encoder_update_user(index, clockwise);

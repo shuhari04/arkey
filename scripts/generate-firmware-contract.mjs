@@ -5,9 +5,14 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const profilePath = resolve(root, "profiles/keychron-q6-pro-ansi.json");
+const option = (name, fallback) => {
+  const index = process.argv.indexOf(name);
+  return index >= 0 && process.argv[index + 1] ? resolve(root, process.argv[index + 1]) : fallback;
+};
+
+const profilePath = option("--profile", resolve(root, "profiles/keychron-q6-pro-ansi.json"));
 const effectsPath = resolve(root, "profiles/effects-v1.json");
-const outputPath = resolve(root, "firmware/qmk/arkey_generated.h");
+const outputPath = option("--output", resolve(root, "firmware/qmk/arkey_generated.h"));
 const profile = JSON.parse(readFileSync(profilePath, "utf8"));
 const effects = JSON.parse(readFileSync(effectsPath, "utf8"));
 

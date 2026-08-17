@@ -17,14 +17,14 @@ Arkey 把兼容的 QMK 键盘变成一套可配置的 Agent 控制面：实体�
 > 本项目仅用于开发、研究、兼容性验证和自有硬件测试，不用于商用。Arkey 自有客户端、host、配置工具、文档和测试按 PolyForm Noncommercial 1.0.0 提供；QMK/Keychron 派生固件仍受其 GPL/MIT 等文件级许可约束，不能被根目录条款统一改成“不可商用”。源码许可也不授予第三方 USB 身份、商标、服务接入或设备销售权。详见[许可证](#许可证)。
 
 > [!WARNING]
-> 可选的 Codex Micro Lab 固件会让自有 Q6 Pro 在 USB 枚举和 HID 行为上临时呈现当前实验所需的兼容身份。该身份不是分配给 Arkey 或你的键盘的 USB 身份，可能随 ChatGPT Desktop 更新而失效，并可能涉及服务条款、商标、USB 身份、保修及当地法律风险。不要销售、分发或把刷入该固件的键盘表述为官方 Codex Micro。构建脚本要求显式风险确认，但永远不会自动刷写。
+> 可选的 Codex Micro Lab 固件会让自有 Q6 Pro ANSI Knob 或 V1 Max ANSI Knob 在 USB 枚举和 HID 行为上临时呈现当前实验所需的兼容身份。该身份不是分配给 Arkey 或你的键盘的 USB 身份，可能随 ChatGPT Desktop 更新而失效，并可能涉及服务条款、商标、USB 身份、保修及当地法律风险。不要销售、分发或把刷入该固件的键盘表述为官方 Codex Micro。构建脚本要求显式风险确认；安装工具会在用户确认 DFU 与目标固件后才写入，绝不自动刷写。
 
 ## 两种模式
 
 | 模式 | Codex 连接 | 键盘连接 | 适用范围 |
 | --- | --- | --- | --- |
 | App Server（默认） | 本机 `codex app-server --listen stdio://` | Arkey 自定义 32-byte Raw HID bridge | 完整的 15 键布局、Skill、Cancel、AgentGlow 灯效及其他 QMK 移植 |
-| Codex Micro Lab（可选） | ChatGPT Desktop 当前版本识别的实验 HID 兼容面 | 64-byte native-facing report + Arkey 自实现配置 report | 仅 Q6 Pro、自有硬件、USB、本地开发测试；不属于公开或受支持的 Codex API |
+| Codex Micro Lab（可选） | ChatGPT Desktop 当前版本识别的实验 HID 兼容面 | 64-byte native-facing report + Arkey 自实现配置 report | Q6 Pro ANSI Knob / V1 Max ANSI Knob、自有硬件、USB、本地开发测试；不属于公开或受支持的 Codex API |
 
 App Server 模式使用 OpenAI 文档公开的开发接口，但 App Server 目前仍是实验性开发/调试界面，可能变化。Micro Lab 不通过 App Server 模拟动作；它直接验证当前 ChatGPT Desktop 与实验固件之间的本地 HID 互操作行为。
 
@@ -40,12 +40,12 @@ Micro Lab 由两个不同协议面组成：
 - `apps/ArkeyMac`：macOS 14+ SwiftUI 客户端，包含 Command Surface、Composer、审批、语音、AgentGlow Light Lab，以及隔离的 Micro Lab 配置视图。
 - `src`：Node 20+ 本地 daemon/CLI，启动 Codex App Server、管理任务和审批，并驱动标准 Arkey QMK bridge。
 - `firmware/qmk/arkey.*` 与 `firmware/keychron-q6-pro.patch`：标准 Arkey/AgentGlow Q6 Pro 示例。
-- `firmware/qmk/codex_micro_lab.*` 与 `firmware/codex-micro-lab-*.patch`：可选 Micro Lab 实验源码；不跟踪预编译二进制。
+- `firmware/qmk/codex_micro_lab.*` 与 `firmware/codex-micro-lab-*.patch`：可选 Q6 Pro / V1 Max Micro Lab 实验源码；不跟踪预编译二进制。
 - `scripts/codex-micro-lab-*.mjs`：自实现配置协议和从 Arkey binding 到 13 个原生目标的同步工具。
 - `profiles`：矩阵、LED、几何、传输和效果目录的版本化数据。
 - `test` 与 CI：host、profile、协议边界、Swift 客户端、标准固件和 Lab 固件的检查。
 
-当前唯一示例目标是 **Keychron Q6 Pro ANSI Knob**。完整控制仅支持 USB；蓝牙保持普通键盘输入，但没有 Raw HID 同步。其他 QMK 键盘必须完成独立适配和真机恢复验证。
+当前示例目标是 **Keychron Q6 Pro ANSI Knob** 和 **Keychron V1 Max ANSI Knob**。V1 Max Lab v0.1.9 的自有硬件 USB 路径已由维护者确认；Q6 Pro Lab v0.1.5 保留独立的构建与验收边界。完整控制仅支持 USB；蓝牙保持普通键盘输入，但没有 Raw HID 同步。其他 QMK 键盘必须完成独立适配和真机恢复验证。
 
 ## 架构
 
@@ -56,7 +56,7 @@ Arkey macOS app ── local RPC ──► Arkey daemon
                                       └─ 32-byte Raw HID ──► Arkey QMK + AgentGlow
 
 Codex Micro Lab mode (optional)
-ChatGPT Desktop ── report 0x06 ───────► Q6 Pro Lab firmware
+ChatGPT Desktop ── report 0x06 ───────► Q6 Pro / V1 Max Lab firmware
 Arkey app / config CLI ── report 0x07 ─► mapping EEPROM
 ```
 
@@ -109,7 +109,15 @@ codesign --verify --deep --strict --verbose=2 build/Arkey.app
 open build/Arkey.app
 ```
 
-`build-macos-app.sh` 会编译并 ad-hoc 签名应用，打包 host、profiles、必要文档和 Lab 配置工具，但不内置 Node 可执行文件，也不会刷写键盘。
+`build-macos-app.sh` 会编译并 ad-hoc 签名应用，打包 host、profiles、必要文档和 Lab 配置工具，但不会刷写键盘。发布 DMG 会额外内置 Node、CLI 和 `dfu-util`；首次使用仍可能需要 macOS 的手动安全确认。
+
+## 更新与诊断中心
+
+ARkey 3.0.3 在启动时及之后每 6 小时检查已签名的更新清单。若有新版本，主界面会显示蓝色下载按钮；用户可选任何已发布版本（含降级）。客户端会验证 Ed25519 清单签名、DMG 大小和 SHA-256，随后仅在 Finder 中打开 DMG，**不会**自动替换应用或刷写键盘固件。
+
+“诊断中心”在本机保存脱敏 JSONL（最多 30 天、50 MB），可筛选更新、USB、HID、DFU 和错误事件并导出 ZIP。V1 Max 的配置 ACK 缺失、Report `0x06/0x07` 异常与 DFU 超时会生成独立会话；若用户安装了诊断服务，失败会以随机安装 ID 上传受限、脱敏事件。日志不包含按键内容、工作区、键盘序列号或原始 HID 报文。
+
+发布者可使用 `scripts/build-release-manifest.mjs`、`scripts/seal-release-manifest.mjs` 与 `scripts/publish-arkey-release.sh` 生成并签名不可变版本目录。私钥、SSH 目标、服务器配置和真实诊断日志均不在本仓库；发布脚本要求通过环境变量显式提供这些值。
 
 首次使用：
 
@@ -147,6 +155,19 @@ shasum -a 256 build/arkey-q6-pro-ansi-v0.1.0.bin
 
 脚本只构建并恢复临时补丁，不执行 `qmk flash` 或 `dfu-util -D`。刷写前请阅读 [`docs/FIRMWARE.md`](docs/FIRMWARE.md)，备份 VIA 配置并准备匹配的官方恢复固件。
 
+## Keychron V1 Max ANSI Knob 标准与 Lab 固件
+
+V1 Max 标准 Arkey 示例固定到 Keychron QMK commit `bc1bdeb85f39cccd5e503f4d8f472078a8c1472a`、QMK target `keychron/v1_max/ansi_encoder:keychron`、STM32F401、STM32 DFU 和原身份 `3434:0913`。Lab 固件版本为 `0.1.9-v1max`，使用隔离的开发身份与 64-byte native-facing/config report。
+
+```bash
+ARKEY_QMK_HOME="$PWD/qmk-v1" ./scripts/build-v1-max-ansi.sh
+QMK_HOME="$PWD/qmk-v1" \
+  ./scripts/build-codex-micro-lab-v1-max.sh \
+  --acknowledge-device-identity-test
+```
+
+V1 Lab 的默认映射为 `PgUp → Agent 1`、`PgDn → Agent 2`、`Home → PTT`、旋钮按下 → `ENC_PRESS`。它支持在应用中发起**已确认**的软件进入 DFU 请求；固件 ACK 后仍必须观察到 `0483:DF11`，用户才能明确开始刷写。无法枚举时应使用 Cable 模式的 Esc 插线或底部 Reset。独立刷写器由 `scripts/make-v1max-firmware-dmg.sh` 构建；它要求发布者显式提供已校验的官方恢复 `.bin`、`dfu-util` 和 `libusb` 路径，源码仓库不跟踪这些二进制。
+
 ## Codex Micro Lab 快速入口
 
 只有在理解并接受设备身份测试风险、拥有目标键盘且完成恢复预检后，才构建实验固件：
@@ -154,6 +175,10 @@ shasum -a 256 build/arkey-q6-pro-ansi-v0.1.0.bin
 ```bash
 QMK_HOME="$PWD/qmk_firmware" \
   ./scripts/build-codex-micro-lab-q6-pro.sh \
+  --acknowledge-device-identity-test
+
+QMK_HOME="$PWD/qmk_firmware_v1" \
+  ./scripts/build-codex-micro-lab-v1-max.sh \
   --acknowledge-device-identity-test
 ```
 
@@ -171,7 +196,7 @@ node scripts/codex-micro-lab-config.mjs configure
 
 先阅读 [`docs/PORTING_QMK.md`](docs/PORTING_QMK.md)。适配至少需要：准确型号与 PCB revision、固定上游 commit、MCU/bootloader/恢复路径、原 VID/PID、Raw HID、RGB Matrix、矩阵与 LED 映射、profile/layout hash、可逆 patch、build-only 脚本、host/Swift/firmware tests 和真机验收。
 
-默认只移植 App Server + 标准 Arkey bridge。Micro Lab 当前严格限于 Q6 Pro 示例；不得把第三方身份或兼容行为顺手扩散到普通 board port。
+默认只移植 App Server + 标准 Arkey bridge。Micro Lab 当前严格限于 Q6 Pro ANSI Knob 与 V1 Max ANSI Knob 示例；不得把第三方身份或兼容行为顺手扩散到普通 board port。
 
 有硬件/QMK 经验但不熟悉代码的开发者，可以让 agent 分四阶段完成。每一阶段先审核输出，再单独授权下一阶段；不要把“实现、编译、刷写”合成一个指令。
 

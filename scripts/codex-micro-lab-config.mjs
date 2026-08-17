@@ -27,13 +27,27 @@ const Opcode = {
   clear: 0x05,
   encoder: 0x06,
   reset: 0x07,
+  enterDfu: 0x08,
   captured: 0x13,
   ack: 0x7f,
 };
 
-const profileUrl = new URL("../profiles/keychron-q6-pro-ansi.json", import.meta.url);
-const profile = JSON.parse(readFileSync(profileUrl, "utf8"));
-const controls = new Map(profile.controls.map((control) => [control.id, control]));
+const profiles = [
+  JSON.parse(readFileSync(new URL("../profiles/keychron-q6-pro-ansi.json", import.meta.url), "utf8")),
+  JSON.parse(readFileSync(new URL("../profiles/keychron-v1-max-ansi-knob.json", import.meta.url), "utf8")),
+];
+let profile = profiles[0];
+let controls = new Map(profile.controls.map((control) => [control.id, control]));
+
+function selectProfile(hello) {
+  const rows = hello.payload[1];
+  const columns = hello.payload[2];
+  const match = profiles.find((candidate) => candidate.matrix.rows === rows && candidate.matrix.columns === columns);
+  if (!match) throw new Error(`固件返回未知矩阵 ${rows}x${columns}；拒绝猜测键位配置。`);
+  profile = match;
+  controls = new Map(profile.controls.map((control) => [control.id, control]));
+  return profile;
+}
 
 function targetIndex(name) {
   const canonicalName = resolveCodexMicroTargetName(name);
@@ -85,6 +99,8 @@ function decode(input) {
   let bytes = Uint8Array.from(input);
   if (bytes.length === REPORT_SIZE - 1 && bytes[0] === MAGIC) {
     bytes = Uint8Array.from([REPORT_ID, ...bytes]);
+  } else if (bytes.length === REPORT_SIZE && bytes[0] === 0 && bytes[1] === MAGIC) {
+    bytes = Uint8Array.from([REPORT_ID, ...bytes.slice(1)]);
   }
   if (bytes.length !== REPORT_SIZE || bytes[0] !== REPORT_ID || bytes[1] !== MAGIC || bytes[2] !== VERSION) return undefined;
   const length = bytes[5];
@@ -133,7 +149,7 @@ function getMappings(handle) {
 }
 
 function printMappings(state) {
-  console.log(`旋钮旋转：${state.encoderEnabled ? "固定接管为 Codex Micro encoder" : "固件状态异常（应始终启用）"}`);
+  console.log(`旋钮旋转：${state.encoderEnabled ? "已映射到 Codex Micro encoder" : "保持原键盘功能"}`);
   for (const mapping of state.mappings) {
     const target = targetNames[mapping.target] ?? `target-${mapping.target}`;
     if (mapping.row === 0xff || mapping.column === 0xff) {
@@ -201,8 +217,10 @@ function syncArkey(handle, merge) {
   }
   for (const assignment of result.assignments) setTarget(handle, assignment);
 
-  const ack = request(handle, Opcode.encoder, [1], Opcode.ack);
-  assertAck(ack, Opcode.encoder);
+  if (!merge || result.encoderEnabled) {
+    const ack = request(handle, Opcode.encoder, [result.encoderEnabled ? 1 : 0], Opcode.ack);
+    assertAck(ack, Opcode.encoder);
+  }
 
   console.log(`已从 ${bindingsPath} 同步 ${result.assignments.length} 个自由键位映射。`);
   for (const assignment of result.assignments) {
@@ -227,10 +245,9 @@ function usage() {
   node scripts/codex-micro-lab-config.mjs map <target> <profile-control-id>
     target 可使用 voice-ptt 或 ptt，二者均指向原生 ACT10（默认 PTT）
   node scripts/codex-micro-lab-config.mjs clear <target>
-  node scripts/codex-micro-lab-config.mjs encoder on
+  node scripts/codex-micro-lab-config.mjs encoder <on|off>
   node scripts/codex-micro-lab-config.mjs reset
-
-  encoder rotation 在 USB Lab 模式中永久启用；reset 会恢复 Q6 Pro 的预置原生映射。`);
+  node scripts/codex-micro-lab-config.mjs enter-dfu --confirm-dfu`);
 }
 
 async function main() {
@@ -242,10 +259,11 @@ async function main() {
 
   const { descriptor, handle } = openDevice();
   try {
+    const hello = request(handle, Opcode.hello);
+    const selectedProfile = selectProfile(hello);
     if (command === "status") {
-      const hello = request(handle, Opcode.hello);
       console.log(`设备：${descriptor.product ?? "Arkey Codex Micro Lab"}`);
-      console.log(`固件能力：${hello.payload[0]} targets / ${hello.payload[1]}x${hello.payload[2]} matrix / ${hello.payload[4]} LEDs`);
+      console.log(`固件能力：${hello.payload[0]} targets / ${hello.payload[1]}x${hello.payload[2]} matrix / ${hello.payload[4]} LEDs / ${selectedProfile.name}`);
       printMappings(getMappings(handle));
     } else if (command === "configure") {
       await configure(handle);
@@ -266,14 +284,20 @@ async function main() {
       assertAck(ack, Opcode.clear);
       printMappings(getMappings(handle));
     } else if (command === "encoder") {
-      if (process.argv[3] !== "on") throw new Error("Codex Micro Lab 的 encoder rotation 永久启用，配置接口不支持关闭");
-      const ack = request(handle, Opcode.encoder, [1], Opcode.ack);
+      const enabled = process.argv[3] === "on";
+      if (!enabled && process.argv[3] !== "off") throw new Error("encoder 参数必须为 on 或 off");
+      const ack = request(handle, Opcode.encoder, [enabled ? 1 : 0], Opcode.ack);
       assertAck(ack, Opcode.encoder);
       printMappings(getMappings(handle));
     } else if (command === "reset") {
       const ack = request(handle, Opcode.reset, [], Opcode.ack);
       assertAck(ack, Opcode.reset);
       printMappings(getMappings(handle));
+    } else if (command === "enter-dfu") {
+      if (!process.argv.includes("--confirm-dfu")) throw new Error("软件进入 DFU 会断开键盘；请追加 --confirm-dfu。它不会自动刷写固件。");
+      const ack = request(handle, Opcode.enterDfu, [0x44, 0x46, 0x55, 0x21], Opcode.ack);
+      assertAck(ack, Opcode.enterDfu);
+      console.log("键盘已确认 DFU 请求；请重新检测 0483:DF11，再手动选择固件写入。");
     } else {
       usage();
       process.exitCode = 2;

@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { AckStatus, AgentState, ControlEventKind, decodeBindingMask, decodeSetKeyEffects, EffectPrimitive, encodeAck, Opcode } from "../src/protocol.js";
-import { q6ProAnsi } from "../src/profile.js";
-import { ArkeyDaemon, defaultQ6Bindings, mergeStates } from "../src/runtime.js";
+import { q6ProAnsi, v1MaxAnsiKnob } from "../src/profile.js";
+import { ArkeyDaemon, defaultQ6Bindings, defaultV1MaxBindings, mergeStates } from "../src/runtime.js";
 
 test("active agents outrank completion while errors remain visible", () => {
   assert.equal(mergeStates([AgentState.Complete, AgentState.Thinking]), AgentState.Thinking);
@@ -143,6 +143,42 @@ test("fresh runtime seeds the original numpad-first Q6 layout with local task ID
       const binding = stored.bindings.find((candidate) => candidate.instanceId === `task-agent-${slotIndex + 1}`);
       assert.equal(binding?.taskId, task?.taskId, `Agent ${slotIndex + 1} must use the fresh runtime task ID`);
     }
+  } finally {
+    await daemon.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("fresh V1 Max runtime seeds its dedicated Micro defaults and V1 binding mask", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "arkey-v1-default-layout-"));
+  const transport = new V2Transport() as unknown as V2Transport & {
+    connection: { profile: typeof v1MaxAnsiKnob; support: "arkey"; product: string; extensionVersion: number; layoutMatches: boolean; fullControl: boolean };
+  };
+  transport.connection = {
+    profile: v1MaxAnsiKnob, support: "arkey", product: "Keychron V1 Max", extensionVersion: 2, layoutMatches: true, fullControl: true,
+  };
+  const daemon = new ArkeyDaemon(transport as never, {
+    runtimeDirectory: directory,
+    appServer: new FakeAppServer() as never,
+    now: () => new Date("2026-08-17T00:00:00.000Z"),
+  });
+  try {
+    await daemon.start();
+    const stored = JSON.parse(readFileSync(join(directory, "bindings-v1.json"), "utf8")) as {
+      revision: number;
+      bindings: Array<{ controlId: string; instanceId: string; actionId: string; profileId: string; layoutHash: string }>;
+    };
+    assert.deepEqual(
+      stored.bindings.map(({ controlId, instanceId, actionId }) => ({ controlId, instanceId, actionId })),
+      defaultV1MaxBindings.map(({ controlId, instanceId, actionId }) => ({ controlId, instanceId, actionId })),
+    );
+    assert.ok(stored.bindings.every((binding) => binding.profileId === v1MaxAnsiKnob.profileId && binding.layoutHash === v1MaxAnsiKnob.layoutHash));
+    await daemon.rpc("binding.set", { controlId: v1MaxAnsiKnob.encoder.pressControlId, actionId: "reasoning", replace: true });
+    const mask = transport.sent.find((packet) => packet.opcode === Opcode.SetBindingMask);
+    assert.ok(mask);
+    // The shared v2 protocol always carries a 16-byte matrix mask; V1 uses its
+    // 6×16 prefix and leaves the remaining bytes padded for wire compatibility.
+    assert.equal(decodeBindingMask(mask.payload).matrixBits.length, 16);
   } finally {
     await daemon.stop();
     rmSync(directory, { recursive: true, force: true });

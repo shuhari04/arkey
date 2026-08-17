@@ -11,6 +11,8 @@ relicensed under PolyForm Noncommercial.
 | OpenAI Codex CLI / App Server | separately installed by the user; not bundled | Apache-2.0 for the published Codex repository | <https://github.com/openai/codex> |
 | Keychron QMK firmware | `618127a725a1773e85f13455602cf6f72ab4de17` | GPL-2.0-only and other file-level licenses | <https://github.com/Keychron/qmk_firmware> |
 | QMK Firmware | inherited by the Keychron fork | GPL-2.0 and other file-level licenses | <https://github.com/qmk/qmk_firmware> |
+| dfu-util | distributor-selected build; bundled only in release DMGs | GPL-2.0-or-later | <https://github.com/dfu-util/dfu-util> |
+| libusb | distributor-selected build; bundled only with dfu-util | LGPL-2.1-or-later | <https://libusb.info/> |
 
 Transitive Node dependencies and exact versions are recorded in
 `package-lock.json`. Swift dependencies and revisions are recorded in

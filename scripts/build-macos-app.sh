@@ -4,6 +4,8 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 PACKAGE="$ROOT/apps/ArkeyMac"
 APP="$ROOT/build/Arkey.app"
+VERSION="${ARKEY_APP_VERSION:-3.0.3}"
+BUILD="${ARKEY_APP_BUILD:-22}"
 npm --prefix "$ROOT" run build
 BIN_DIR=$(swift build --package-path "$PACKAGE" -c release --show-bin-path)
 
@@ -18,29 +20,27 @@ if [ ! -d "$RESOURCE_BUNDLE" ]; then
 fi
 cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
 cp "$PACKAGE/Resources/Info.plist" "$APP/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$BUILD" "$APP/Contents/Info.plist"
 cp "$PACKAGE/Resources/Arkey.icns" "$APP/Contents/Resources/Arkey.icns"
 cp "$ROOT/profiles/keychron-q6-pro-ansi.json" "$APP/Contents/Resources/keychron-q6-pro-ansi.json"
+cp "$ROOT/profiles/keychron-v1-max-ansi-knob.json" "$APP/Contents/Resources/keychron-v1-max-ansi-knob.json"
 if [ -f "$ROOT/profiles/effects-v1.json" ]; then
     cp "$ROOT/profiles/effects-v1.json" "$APP/Contents/Resources/effects-v1.json"
 fi
 mkdir -p "$APP/Contents/Resources/ArkeyRuntime"
-mkdir -p "$APP/Contents/Resources/ArkeyRuntime/dist"
-cp -R "$ROOT/dist/src" "$APP/Contents/Resources/ArkeyRuntime/dist/src"
+cp -R "$ROOT/dist" "$APP/Contents/Resources/ArkeyRuntime/dist"
 cp -R "$ROOT/profiles" "$APP/Contents/Resources/ArkeyRuntime/profiles"
-mkdir -p "$APP/Contents/Resources/ArkeyRuntime/docs"
-for document in ARCHITECTURE.md CODEX_MICRO_LAB.md FIRMWARE.md PORTING_QMK.md; do
-    cp "$ROOT/docs/$document" "$APP/Contents/Resources/ArkeyRuntime/docs/$document"
-done
-mkdir -p "$APP/Contents/Resources/ArkeyRuntime/scripts"
-for script in codex-micro-lab-bindings.mjs codex-micro-lab-config.mjs; do
-    cp "$ROOT/scripts/$script" "$APP/Contents/Resources/ArkeyRuntime/scripts/$script"
-done
-cp "$ROOT/README.md" "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/TRADEMARKS.md" "$APP/Contents/Resources/ArkeyRuntime/"
-cp -R "$ROOT/LICENSES" "$APP/Contents/Resources/ArkeyRuntime/LICENSES"
-mkdir -p "$APP/Contents/Resources/ArkeyRuntime/node_modules"
-for module in node-hid node-addon-api pkg-prebuilds; do
-    cp -R "$ROOT/node_modules/$module" "$APP/Contents/Resources/ArkeyRuntime/node_modules/$module"
-done
+cp -R "$ROOT/docs" "$APP/Contents/Resources/ArkeyRuntime/docs"
+if [ -f "$ROOT/build/arkey-q6-pro-ansi-v0.1.0.bin" ]; then
+    mkdir -p "$APP/Contents/Resources/ArkeyRuntime/build"
+    cp "$ROOT/build/arkey-q6-pro-ansi-v0.1.0.bin" "$APP/Contents/Resources/ArkeyRuntime/build/"
+fi
+if [ -f "$ROOT/build/arkey-q6-pro-codex-micro-lab-v0.1.5.bin" ]; then
+    mkdir -p "$APP/Contents/Resources/ArkeyRuntime/build"
+    cp "$ROOT/build/arkey-q6-pro-codex-micro-lab-v0.1.5.bin" "$APP/Contents/Resources/ArkeyRuntime/build/"
+fi
+cp -R "$ROOT/node_modules" "$APP/Contents/Resources/ArkeyRuntime/node_modules"
 cp "$ROOT/package.json" "$APP/Contents/Resources/ArkeyRuntime/package.json"
 codesign --deep --force --sign - "$APP"
 echo "Built: $APP"
